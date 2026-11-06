@@ -1,0 +1,31 @@
+# World names
+nether-world: world_nether
+underworld-world: underworld
+
+# Create the Underworld automatically on startup if it does not exist.
+# Turn this off if you create it yourself with Multiverse:
+#   /mv create underworld normal -g Underworld        (Multiverse 4)
+#   /mv create underworld -e normal -g Underworld     (Multiverse 5)
+auto-create-world: true
+
+fall:
+  # Falling below this Y in the Nether sends you down
+  trigger-y: -8
+  # Where you appear in the Underworld (keep under 320 so Bedrock can render it)
+  arrival-y: 280
+  slow-fall-seconds: 8
+  # No fall damage for this long after arriving
+  fall-immunity-seconds: 40
+
+return:
+  # Flying above this Y in the Underworld sends you back to the Nether
+  trigger-y: 312
+  fire-resistance-seconds: 15
+
+guards:
+  enabled: true
+  # Minutes before a guard group may respawn
+  respawn-minutes: 10
+  fortress: 6
+  tower: 3
+  maze: 3
