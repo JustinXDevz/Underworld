@@ -1,0 +1,18 @@
+name: Underworld
+version: 1.0.0
+main: dev.underworld.UnderworldPlugin
+api-version: '1.21'
+description: A no-build dimension far below the Nether void (Unstable SMP style).
+softdepend: [Multiverse-Core, floodgate, Geyser-Spigot]
+commands:
+  underworld:
+    description: Underworld admin command
+    usage: /underworld <tp|info|reload>
+    permission: underworld.admin
+permissions:
+  underworld.admin:
+    description: Use /underworld
+    default: op
+  underworld.bypass:
+    description: Build and break inside the Underworld
+    default: op
