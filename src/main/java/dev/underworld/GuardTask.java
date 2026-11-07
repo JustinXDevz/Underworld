@@ -35,7 +35,7 @@ public final class GuardTask extends BukkitRunnable {
     @Override
     public void run() {
         FileConfiguration cfg = plugin.getConfig();
-        if (!cfg.getBoolean("guards.enabled", true)) return;
+        if (!cfg.getBoolean("guard-mobs", false)) return;
         World w = Bukkit.getWorld(plugin.underworldName());
         if (w == null || w.getPlayers().isEmpty()) return;
 
