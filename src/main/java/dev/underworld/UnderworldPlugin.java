@@ -3,6 +3,7 @@ package dev.underworld;
 import org.bukkit.Bukkit;
 import org.bukkit.Difficulty;
 import org.bukkit.World;
+import org.bukkit.WorldBorder;
 import org.bukkit.WorldCreator;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.generator.ChunkGenerator;
@@ -11,18 +12,20 @@ import org.bukkit.plugin.java.JavaPlugin;
 public final class UnderworldPlugin extends JavaPlugin {
 
     private TransitionListener transition;
+    private Knights knights;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         UnderworldBiomes.configure(getConfig().getString("fog-biome", "soul_sand_valley"));
 
+        knights = new Knights(this);
         transition = new TransitionListener(this);
         getServer().getPluginManager().registerEvents(transition, this);
         getServer().getPluginManager().registerEvents(new ProtectionListener(this), this);
         getServer().getPluginManager().registerEvents(new LootListener(this), this);
         getServer().getPluginManager().registerEvents(new MobListener(this), this);
-        new GuardTask(this).runTaskTimer(this, 100L, 100L);
+        new GuardTask(this).runTaskTimer(this, 100L, 40L);
 
         PluginCommand cmd = getCommand("underworld");
         if (cmd != null) cmd.setExecutor(new UnderworldCommand(this));
@@ -54,6 +57,12 @@ public final class UnderworldPlugin extends JavaPlugin {
         World w = Bukkit.getWorld(underworldName());
         if (w == null) return;
         w.setTime(getConfig().getLong("world-time", 13000L));
+        WorldBorder border = w.getWorldBorder();
+        double size = getConfig().getDouble("border-size", 4800);
+        if (border.getSize() != size) {
+            border.setCenter(0, 0);
+            border.setSize(size);
+        }
         w.setStorm(false);
         w.setThundering(false);
         if (w.getDifficulty() != Difficulty.HARD) w.setDifficulty(Difficulty.HARD);
@@ -62,6 +71,10 @@ public final class UnderworldPlugin extends JavaPlugin {
     public void reload() {
         reloadConfig();
         transition.reload();
+    }
+
+    public Knights knights() {
+        return knights;
     }
 
     public TransitionListener transition() {
