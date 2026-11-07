@@ -3,10 +3,20 @@ nether-world: world_nether
 underworld-world: underworld
 
 # Create the Underworld automatically on startup if it does not exist.
-# Turn this off if you create it yourself with Multiverse:
-#   /mv create underworld normal -g Underworld        (Multiverse 4)
-#   /mv create underworld -e normal -g Underworld     (Multiverse 5)
+# Turn this off if you create it yourself with Multiverse.
 auto-create-world: true
+
+# Fog / atmosphere.
+# fog-biome decides the fog colour (needs NEW chunks, see README):
+#   soul_sand_valley = teal-green   warped_forest = purple-teal
+#   nether_wastes    = red          crimson_forest = dark red   basalt_deltas = grey
+fog-biome: soul_sand_valley
+# Fixed time in the Underworld. Lower = brighter fog (12000 = dusk), higher = darker (14000+).
+world-time: 13000
+
+# Mobs
+allow-mobs: false     # false = no mobs spawn in the Underworld at all
+guard-mobs: false     # true = geared wither skeletons guard fortresses/towers/mazes
 
 fall:
   # Falling below this Y in the Nether sends you down
@@ -23,8 +33,7 @@ return:
   fire-resistance-seconds: 15
 
 guards:
-  enabled: true
-  # Minutes before a guard group may respawn
+  # Only used when guard-mobs is true
   respawn-minutes: 10
   fortress: 6
   tower: 3
