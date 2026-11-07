@@ -15,11 +15,13 @@ public final class UnderworldPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        UnderworldBiomes.configure(getConfig().getString("fog-biome", "soul_sand_valley"));
 
         transition = new TransitionListener(this);
         getServer().getPluginManager().registerEvents(transition, this);
         getServer().getPluginManager().registerEvents(new ProtectionListener(this), this);
         getServer().getPluginManager().registerEvents(new LootListener(this), this);
+        getServer().getPluginManager().registerEvents(new MobListener(this), this);
         new GuardTask(this).runTaskTimer(this, 100L, 100L);
 
         PluginCommand cmd = getCommand("underworld");
@@ -39,19 +41,10 @@ public final class UnderworldPlugin extends JavaPlugin {
         return new UnderworldGenerator();
     }
 
-    private void ensureWorld() {
-        String name = underworldName();
-        if (Bukkit.getWorld(name) != null) return;
-        getLogger().info("Creating world '" + name + "'...");
-        Bukkit.createWorld(new WorldCreator(name)
-                .environment(World.Environment.NORMAL)
-                .generator(new UnderworldGenerator()));
-    }
-
     private void lockWorld() {
         World w = Bukkit.getWorld(underworldName());
         if (w == null) return;
-        w.setTime(18000L);
+        w.setTime(getConfig().getLong("world-time", 13000L));
         w.setStorm(false);
         w.setThundering(false);
         if (w.getDifficulty() != Difficulty.HARD) w.setDifficulty(Difficulty.HARD);
