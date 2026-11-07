@@ -1,15 +1,24 @@
 package dev.underworld;
 
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Mob;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.world.EntitiesLoadEvent;
+import org.bukkit.inventory.ItemStack;
 
-/** No mobs in the Underworld: blocks natural spawns and removes mobs that already exist. */
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * No natural mobs in the Underworld. Allowed: the netherite knights/guards (spawned by this plugin),
+ * wardens (summoned by sculk shriekers) and anything an admin spawns by hand.
+ */
 public final class MobListener implements Listener {
 
     private final UnderworldPlugin plugin;
@@ -26,8 +35,8 @@ public final class MobListener implements Listener {
     public void onSpawn(CreatureSpawnEvent e) {
         if (!inUnderworld(e.getLocation().getWorld())) return;
         if (plugin.getConfig().getBoolean("allow-mobs", false)) return;
+        if (e.getEntityType() == EntityType.WARDEN) return;
         SpawnReason reason = e.getSpawnReason();
-        // Plugins (guards), /summon and spawn eggs still work for admins
         if (reason == SpawnReason.CUSTOM || reason == SpawnReason.COMMAND || reason == SpawnReason.SPAWNER_EGG) return;
         e.setCancelled(true);
     }
@@ -36,9 +45,20 @@ public final class MobListener implements Listener {
     public void onEntitiesLoad(EntitiesLoadEvent e) {
         if (!inUnderworld(e.getWorld())) return;
         if (plugin.getConfig().getBoolean("allow-mobs", false)) return;
-        if (plugin.getConfig().getBoolean("guard-mobs", false)) return;
         for (Entity en : e.getEntities()) {
-            if (en instanceof Mob) en.remove();
+            if (!(en instanceof Mob)) continue;
+            if (en.getType() == EntityType.WARDEN || plugin.knights().kind(en) > 0) continue;
+            en.remove();
         }
+    }
+
+    /** Knights and guards drop extra loot on top of their gear. */
+    @EventHandler
+    public void onDeath(EntityDeathEvent e) {
+        int kind = plugin.knights().kind(e.getEntity());
+        if (kind == 0) return;
+        e.getDrops().addAll(LootListener.roll(kind == 1 ? 6 : 3));
+        e.getDrops().add(new ItemStack(Material.NETHERITE_SCRAP, 1 + ThreadLocalRandom.current().nextInt(3)));
+        e.setDroppedExp(kind == 1 ? 500 : 250);
     }
 }
