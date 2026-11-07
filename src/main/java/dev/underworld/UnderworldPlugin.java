@@ -41,6 +41,15 @@ public final class UnderworldPlugin extends JavaPlugin {
         return new UnderworldGenerator();
     }
 
+    private void ensureWorld() {
+        String name = underworldName();
+        if (Bukkit.getWorld(name) != null) return;
+        getLogger().info("Creating world '" + name + "'...");
+        Bukkit.createWorld(new WorldCreator(name)
+                .environment(World.Environment.NORMAL)
+                .generator(new UnderworldGenerator()));
+    }
+
     private void lockWorld() {
         World w = Bukkit.getWorld(underworldName());
         if (w == null) return;
