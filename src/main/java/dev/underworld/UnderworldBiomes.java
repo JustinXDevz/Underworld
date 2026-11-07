@@ -26,3 +26,12 @@ public final class UnderworldBiomes extends BiomeProvider {
     }
 
     @Override
+    public Biome getBiome(WorldInfo info, int x, int y, int z) {
+        return fog;
+    }
+
+    @Override
+    public List<Biome> getBiomes(WorldInfo info) {
+        return List.of(fog);
+    }
+}
