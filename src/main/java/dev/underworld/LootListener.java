@@ -89,6 +89,20 @@ public final class LootListener implements Listener {
         fill(e.getInventory());
     }
 
+    /** Rolls loot from the table (also used for knight drops). */
+    public static List<ItemStack> roll(int rolls) {
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        List<ItemStack> out = new ArrayList<>();
+        for (int i = 0; i < rolls; i++) {
+            Entry entry = pick(r.nextInt(TOTAL_WEIGHT));
+            int amount = entry.min() + r.nextInt(entry.max() - entry.min() + 1);
+            ItemStack item = new ItemStack(entry.material(), amount);
+            for (Ench en : entry.enchants()) item.addUnsafeEnchantment(en.enchantment(), en.level());
+            out.add(item);
+        }
+        return out;
+    }
+
     private void fill(Inventory inv) {
         ThreadLocalRandom r = ThreadLocalRandom.current();
         List<Integer> slots = new ArrayList<>();
@@ -98,14 +112,7 @@ public final class LootListener implements Listener {
         put(inv, slots, new ItemStack(Material.NETHERITE_INGOT, 1 + r.nextInt(2)));
         put(inv, slots, fireResistance());
 
-        int rolls = 7 + r.nextInt(5);
-        for (int i = 0; i < rolls && !slots.isEmpty(); i++) {
-            Entry entry = pick(r.nextInt(TOTAL_WEIGHT));
-            int amount = entry.min() + r.nextInt(entry.max() - entry.min() + 1);
-            ItemStack item = new ItemStack(entry.material(), amount);
-            for (Ench en : entry.enchants()) item.addUnsafeEnchantment(en.enchantment(), en.level());
-            put(inv, slots, item);
-        }
+        for (ItemStack item : roll(7 + r.nextInt(5))) put(inv, slots, item);
     }
 
     private void put(Inventory inv, List<Integer> slots, ItemStack item) {
@@ -122,7 +129,7 @@ public final class LootListener implements Listener {
         return potion;
     }
 
-    private Entry pick(int roll) {
+    private static Entry pick(int roll) {
         for (Entry e : TABLE) {
             roll -= e.weight();
             if (roll < 0) return e;
