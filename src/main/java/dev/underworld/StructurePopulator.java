@@ -12,14 +12,17 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Random;
 
-/** Builds ruined fortresses, watch towers and mazes at the spots chosen by {@link Terrain}. */
+/** Builds fortresses, towers, mazes, ruins, outposts and houses at the sites chosen by {@link Terrain}. */
 public final class StructurePopulator extends BlockPopulator {
+
+    private static final String CHEST_S = "minecraft:chest[facing=south]";
+    private static final String CHEST_N = "minecraft:chest[facing=north]";
 
     @Override
     public void populate(WorldInfo info, Random unused, int chunkX, int chunkZ, LimitedRegion region) {
         Terrain t = Terrain.get(info.getSeed());
         Terrain.Feature f = t.feature(Math.floorDiv(chunkX, 4), Math.floorDiv(chunkZ, 4));
-        if (f.type() == Terrain.FeatureType.NONE || f.type() == Terrain.FeatureType.SPIRE) return;
+        if (!isBuilt(f.type())) return;
         if (Math.floorDiv(f.x(), 16) != chunkX || Math.floorDiv(f.z(), 16) != chunkZ) return;
 
         Random r = new Random(info.getSeed() * 31L + f.x() * 7919L + f.z() * 104729L);
@@ -28,8 +31,17 @@ public final class StructurePopulator extends BlockPopulator {
             case FORTRESS -> fortress(s);
             case TOWER -> tower(s);
             case MAZE -> maze(s);
+            case RUIN -> ruin(s);
+            case OUTPOST -> outpost(s);
+            case HOUSE -> house(s);
             default -> { }
         }
+    }
+
+    private static boolean isBuilt(Terrain.FeatureType type) {
+        return type == Terrain.FeatureType.FORTRESS || type == Terrain.FeatureType.TOWER
+                || type == Terrain.FeatureType.MAZE || type == Terrain.FeatureType.RUIN
+                || type == Terrain.FeatureType.OUTPOST || type == Terrain.FeatureType.HOUSE;
     }
 
     // ------------------------------------------------------------------ helpers
@@ -38,6 +50,7 @@ public final class StructurePopulator extends BlockPopulator {
         final LimitedRegion region;
         final Terrain t;
         final Random r;
+        final Palette pal;
         final int cx;
         final int cz;
         final int floor;
@@ -46,6 +59,7 @@ public final class StructurePopulator extends BlockPopulator {
             this.region = region;
             this.t = t;
             this.r = r;
+            this.pal = Palette.of(f.zone());
             this.cx = f.x();
             this.cz = f.z();
             this.floor = f.baseY();
@@ -60,10 +74,7 @@ public final class StructurePopulator extends BlockPopulator {
         }
 
         Material brick() {
-            int k = r.nextInt(10);
-            if (k < 6) return Material.DEEPSLATE_BRICKS;
-            if (k < 9) return Material.CRACKED_DEEPSLATE_BRICKS;
-            return Material.BLACKSTONE;
+            return pal.pick(r);
         }
 
         /** Levels the ground: foundation below the floor, clears terrain above it, lays the floor. */
@@ -71,9 +82,10 @@ public final class StructurePopulator extends BlockPopulator {
             for (int x = cx - half; x <= cx + half; x++) {
                 for (int z = cz - half; z <= cz + half; z++) {
                     int s = t.column(x, z).surface();
-                    for (int y = s + 1; y < floor; y++) set(x, y, z, Material.DEEPSLATE_BRICKS);
+                    if (s == Terrain.VOID) s = floor;
+                    for (int y = s + 1; y < floor; y++) set(x, y, z, pal.wall());
                     for (int y = floor + 1; y <= s; y++) set(x, y, z, Material.AIR);
-                    set(x, floor, z, r.nextInt(6) == 0 ? Material.COBBLED_DEEPSLATE : Material.DEEPSLATE_TILES);
+                    set(x, floor, z, r.nextInt(6) == 0 ? pal.alt() : pal.floor());
                 }
             }
         }
@@ -133,14 +145,14 @@ public final class StructurePopulator extends BlockPopulator {
                     } else if (h == 7 && !(Math.abs(dx) <= 1 && Math.abs(dz) <= 1)) {
                         s.set(cx + dx, f + h, cz + dz, s.brick());
                     } else if (h == 13 && s.r.nextDouble() > 0.35) {
-                        s.set(cx + dx, f + h, cz + dz, Material.DEEPSLATE_TILES);
+                        s.set(cx + dx, f + h, cz + dz, s.pal.roof());
                     }
                 }
             }
         }
-        s.data(cx, f + 1, cz, "minecraft:chest[facing=south]");
-        s.data(cx - 3, f + 1, cz - 3, "minecraft:chest[facing=south]");
-        s.data(cx + 3, f + 8, cz - 3, "minecraft:chest[facing=south]");
+        s.data(cx, f + 1, cz, CHEST_S);
+        s.data(cx - 3, f + 1, cz - 3, CHEST_S);
+        s.data(cx + 3, f + 8, cz - 3, CHEST_S);
 
         // Broken pillars in the courtyard
         for (int i = 0; i < 8; i++) {
@@ -177,13 +189,12 @@ public final class StructurePopulator extends BlockPopulator {
                 }
             }
         }
-        // Ladder up the inside of the north wall
         for (int h = 1; h <= 30; h++) {
             s.data(cx, f + h, cz - 3, "minecraft:ladder[facing=south]");
         }
-        s.data(cx + 2, f + 11, cz + 2, "minecraft:chest[facing=north]");
-        s.data(cx - 2, f + 21, cz + 2, "minecraft:chest[facing=north]");
-        s.data(cx + 2, f + 31, cz + 2, "minecraft:chest[facing=north]");
+        s.data(cx + 2, f + 11, cz + 2, CHEST_N);
+        s.data(cx - 2, f + 21, cz + 2, CHEST_N);
+        s.data(cx + 2, f + 31, cz + 2, CHEST_N);
     }
 
     // ------------------------------------------------------------------ maze
@@ -217,7 +228,6 @@ public final class StructurePopulator extends BlockPopulator {
             stack.push(new int[] {cur[0] + d[0], cur[1] + d[1]});
         }
 
-        // Entrances in the middle of every side, and a room in the middle
         open[15][0] = true;
         open[15][30] = true;
         open[0][15] = true;
@@ -234,12 +244,120 @@ public final class StructurePopulator extends BlockPopulator {
                     for (int h = 1; h <= 4; h++) s.set(x, f + h, z, s.brick());
                 } else if (i % 2 == 1 && j % 2 == 1 && !(i >= 13 && i <= 17 && j >= 13 && j <= 17)
                         && s.r.nextInt(100) < 6) {
-                    s.set(x, f, z, Material.MAGMA_BLOCK); // mild floor trap
+                    s.set(x, f, z, Material.MAGMA_BLOCK);
                 }
-                s.set(x, f + 5, z, Material.DEEPSLATE_TILES); // roof keeps it dark
+                s.set(x, f + 5, z, s.pal.roof());
             }
         }
-        s.data(s.cx - 1, f + 1, s.cz, "minecraft:chest[facing=south]");
-        s.data(s.cx + 1, f + 1, s.cz, "minecraft:chest[facing=south]");
+        s.data(s.cx - 1, f + 1, s.cz, CHEST_S);
+        s.data(s.cx + 1, f + 1, s.cz, CHEST_S);
+    }
+
+    // ------------------------------------------------------------------ ruin
+
+    private void ruin(Site s) {
+        int cx = s.cx;
+        int cz = s.cz;
+        int f = s.floor;
+        s.prepare(10);
+
+        for (int i = 0; i < 6; i++) {
+            boolean alongX = s.r.nextBoolean();
+            int ox = s.r.nextInt(15) - 7;
+            int oz = s.r.nextInt(15) - 7;
+            int len = 4 + s.r.nextInt(6);
+            int height = 2 + s.r.nextInt(5);
+            for (int k = 0; k < len; k++) {
+                int x = cx + ox + (alongX ? k : 0);
+                int z = cz + oz + (alongX ? 0 : k);
+                int hgt = Math.max(1, height - s.r.nextInt(3));
+                for (int h = 1; h <= hgt; h++) s.set(x, f + h, z, s.brick());
+            }
+        }
+        for (int i = 0; i < 6; i++) {
+            int x = cx + s.r.nextInt(17) - 8;
+            int z = cz + s.r.nextInt(17) - 8;
+            int height = 2 + s.r.nextInt(5);
+            for (int h = 1; h <= height; h++) s.set(x, f + h, z, s.pal.log());
+        }
+        if (s.r.nextInt(100) < 75) {
+            s.data(cx + s.r.nextInt(5) - 2, f + 1, cz + s.r.nextInt(5) - 2, CHEST_S);
+        }
+    }
+
+    // ------------------------------------------------------------------ outpost
+
+    private void outpost(Site s) {
+        int cx = s.cx;
+        int cz = s.cz;
+        int f = s.floor;
+        s.prepare(8);
+
+        // Walls, gate in the south, taller corner posts
+        for (int dx = -8; dx <= 8; dx++) {
+            for (int dz = -8; dz <= 8; dz++) {
+                if (Math.abs(dx) != 8 && Math.abs(dz) != 8) continue;
+                boolean gate = dz == 8 && Math.abs(dx) <= 1;
+                boolean post = Math.abs(dx) >= 7 && Math.abs(dz) >= 7;
+                int top = post ? 7 : 4;
+                for (int h = 1; h <= top; h++) {
+                    if (gate && h <= 3) continue;
+                    if (!post && h == 4 && ((dx + dz) & 1) == 0) continue;
+                    s.set(cx + dx, f + h, cz + dz, s.brick());
+                }
+            }
+        }
+
+        // Watch tower in the middle
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                boolean shell = Math.abs(dx) == 2 || Math.abs(dz) == 2;
+                for (int h = 1; h <= 10; h++) {
+                    if (shell) {
+                        boolean door = dz == 2 && dx == 0 && h <= 2;
+                        if (door) continue;
+                        s.set(cx + dx, f + h, cz + dz, s.brick());
+                    } else if (h == 5 && !(dx == 0 && dz == -1)) {
+                        s.set(cx + dx, f + h, cz + dz, s.brick());
+                    }
+                }
+            }
+        }
+        for (int h = 1; h <= 9; h++) {
+            s.data(cx, f + h, cz - 1, "minecraft:ladder[facing=south]");
+        }
+        s.data(cx - 5, f + 1, cz - 5, CHEST_S);
+        s.data(cx + 5, f + 1, cz - 5, CHEST_S);
+        s.data(cx, f + 6, cz + 1, CHEST_S);
+    }
+
+    // ------------------------------------------------------------------ house
+
+    private void house(Site s) {
+        int cx = s.cx;
+        int cz = s.cz;
+        int f = s.floor;
+        s.prepare(6);
+
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -4; dz <= 4; dz++) {
+                boolean shell = Math.abs(dx) == 5 || Math.abs(dz) == 4;
+                boolean corner = Math.abs(dx) == 5 && Math.abs(dz) == 4;
+                if (shell) {
+                    for (int h = 1; h <= 4; h++) {
+                        boolean door = dz == 4 && dx == 0 && h <= 2;
+                        if (door) continue;
+                        boolean window = h == 3 && ((Math.abs(dx) == 5 && dz == 0) || (dz == -4 && Math.abs(dx) == 2));
+                        s.set(cx + dx, f + h, cz + dz, window ? s.pal.glass() : (corner ? s.pal.log() : s.pal.plank()));
+                    }
+                }
+                for (int k = 0; k < 5; k++) {
+                    if (dx >= -6 + k && dx <= 6 - k && dz >= -5 + k && dz <= 5 - k) {
+                        s.set(cx + dx, f + 5 + k, cz + dz, s.pal.roof());
+                    }
+                }
+            }
+        }
+        s.data(cx + 3, f + 1, cz - 2, CHEST_S);
     }
 }
