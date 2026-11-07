@@ -102,7 +102,10 @@ public final class TransitionListener implements Listener {
                         busy.remove(id);
                         return;
                     }
-                    int[] spot = findLanding(Terrain.get(under.getSeed()), x, z);
+                    // Wrap the Nether position into the hub so you always land in the safe middle area
+                    int hubX = Math.floorMod(x, 700) - 350;
+                    int hubZ = Math.floorMod(z, 700) - 350;
+                    int[] spot = findLanding(Terrain.get(under.getSeed()), hubX, hubZ);
                     Location dest = new Location(under, spot[0] + 0.5, arrivalY, spot[1] + 0.5, from.getYaw(), 0f);
                     p.teleportAsync(dest).thenAccept(ok ->
                             Bukkit.getScheduler().runTask(plugin, () -> finishDescent(p, ok)));
@@ -130,16 +133,16 @@ public final class TransitionListener implements Listener {
 
     /** Looks for a column that is not lava, spiralling out from the fall position. */
     private int[] findLanding(Terrain t, int x, int z) {
-        if (t.isLand(x, z)) return new int[] {x, z};
+        if (t.isLand(x, z) && t.zone(x, z) == Terrain.Zone.BASE) return new int[] {x, z};
         for (int r = 12; r <= 120; r += 12) {
             for (int a = 0; a < 8; a++) {
                 double ang = a * Math.PI / 4.0;
                 int nx = x + (int) Math.round(Math.cos(ang) * r);
                 int nz = z + (int) Math.round(Math.sin(ang) * r);
-                if (t.isLand(nx, nz)) return new int[] {nx, nz};
+                if (t.isLand(nx, nz) && t.zone(nx, nz) == Terrain.Zone.BASE) return new int[] {nx, nz};
             }
         }
-        return new int[] {x, z};
+        return new int[] {0, 0};
     }
 
     // ------------------------------------------------------------------ up
@@ -150,8 +153,8 @@ public final class TransitionListener implements Listener {
         UUID id = p.getUniqueId();
         if (!busy.add(id)) return;
 
-        int x = p.getLocation().getBlockX();
-        int z = p.getLocation().getBlockZ();
+        int x = p.getLocation().getBlockX() / 8;
+        int z = p.getLocation().getBlockZ() / 8;
 
         nether.getChunkAtAsync(x >> 4, z >> 4).thenAccept(ignored ->
                 Bukkit.getScheduler().runTask(plugin, () -> {
