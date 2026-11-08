@@ -18,8 +18,22 @@ public final class UnderworldGenerator extends ChunkGenerator {
     /** Block data is created lazily, once the server is running. */
     private static final class Data {
         static final BlockData LEAVES = Bukkit.createBlockData("minecraft:spruce_leaves[persistent=true]");
+        static final BlockData SNOW = Bukkit.createBlockData("minecraft:snow[layers=1]");
         static final BlockData SHRIEKER = Bukkit.createBlockData("minecraft:sculk_shrieker[can_summon=true]");
         static final BlockData SENSOR = Bukkit.createBlockData("minecraft:sculk_sensor");
+    }
+
+    private static Material strata(int y) {
+        int k = Math.floorMod(y, 3);
+        return k == 0 ? Material.SOUL_SAND : (k == 1 ? Material.SOUL_SOIL : Material.BLACKSTONE);
+    }
+
+    private static Material wallBrick(int x, int y, int z) {
+        int k = Math.floorMod(x * 7 + y * 13 + z * 5, 11);
+        if (k < 6) return Material.DEEPSLATE_BRICKS;
+        if (k < 9) return Material.CRACKED_DEEPSLATE_BRICKS;
+        if (k == 9) return Material.DEEPSLATE_TILES;
+        return Material.BLACKSTONE;
     }
 
     @Override
@@ -44,14 +58,27 @@ public final class UnderworldGenerator extends ChunkGenerator {
                     continue;
                 }
 
-                // Bedrock floor, deepslate, blackstone, filler, top
+                // Bedrock floor and deepslate
                 cd.setBlock(lx, minY, lz, Material.BEDROCK);
                 for (int y = minY + 1; y <= minY + 3; y++) {
                     cd.setBlock(lx, y, lz, random.nextInt(y - minY + 1) == 0 ? Material.BEDROCK : Material.DEEPSLATE);
                 }
                 cd.setRegion(lx, minY + 4, lz, lx + 1, 0, lz + 1, Material.DEEPSLATE);
-                cd.setRegion(lx, 0, lz, lx + 1, s - 3, lz + 1, Material.BLACKSTONE);
-                cd.setRegion(lx, s - 3, lz, lx + 1, s, lz + 1, c.filler());
+
+                if (c.filler() == Material.DEEPSLATE_BRICKS) {
+                    // Valley of Dark: towering brick canyon wall
+                    cd.setRegion(lx, 0, lz, lx + 1, Terrain.VALLEY_FLOOR - 6, lz + 1, Material.BLACKSTONE);
+                    for (int y = Terrain.VALLEY_FLOOR - 6; y < s; y++) {
+                        cd.setBlock(lx, y, lz, wallBrick(x, y, z));
+                    }
+                } else if (c.filler() == Material.SOUL_SOIL) {
+                    // Terraced soul soil / soul sand with striped cliff sides
+                    cd.setRegion(lx, 0, lz, lx + 1, s - 8, lz + 1, Material.BLACKSTONE);
+                    for (int y = s - 8; y < s; y++) cd.setBlock(lx, y, lz, strata(y));
+                } else {
+                    cd.setRegion(lx, 0, lz, lx + 1, s - 3, lz + 1, Material.BLACKSTONE);
+                    cd.setRegion(lx, s - 3, lz, lx + 1, s, lz + 1, c.filler());
+                }
                 cd.setBlock(lx, s, lz, c.top());
 
                 if (s < Terrain.SEA) {
@@ -59,8 +86,7 @@ public final class UnderworldGenerator extends ChunkGenerator {
                 }
 
                 // Hub spires
-                Terrain.Feature f = t.feature(Math.floorDiv(x, Terrain.CELL), Math.floorDiv(z, Terrain.CELL));
-                int top = t.spireTop(x, z, f);
+                int top = t.spireTop(x, z);
                 if (top != Terrain.ABSENT && top > s) {
                     top = Math.min(top, maxY - 1);
                     for (int y = s + 1; y <= top; y++) {
@@ -77,18 +103,16 @@ public final class UnderworldGenerator extends ChunkGenerator {
                     cd.setBlock(lx, by - 1, lz, Material.DEEPSLATE_BRICKS);
                 }
 
-                // Crystal spikes
-                Terrain.Crystal cr = t.crystalAt(x, z);
-                if (cr != null && cr.top() > s) {
-                    int ctop = Math.min(cr.top(), maxY - 1);
-                    int baseTop = Math.min(s + 2, ctop);
-                    cd.setRegion(lx, s + 1, lz, lx + 1, baseTop + 1, lz + 1, Material.AMETHYST_BLOCK);
-                    if (ctop > baseTop) {
-                        cd.setRegion(lx, baseTop + 1, lz, lx + 1, ctop + 1, lz + 1, cr.material());
+                // Leaning lime crystal blades
+                Terrain.CrystalColumn cc = t.crystalColumn(x, z);
+                if (cc != null) {
+                    for (int i = 0; i < cc.hit().length; i++) {
+                        int y = cc.base() + i;
+                        if (cc.hit()[i] && y > s && y < maxY) cd.setBlock(lx, y, lz, Material.LIME_STAINED_GLASS);
                     }
                 }
 
-                // Big spruce trees
+                // Giant snowy spruces
                 Terrain.Tree tr = t.treeAt(x, z);
                 if (tr != null) {
                     int dx = x - tr.x();
@@ -99,13 +123,19 @@ public final class UnderworldGenerator extends ChunkGenerator {
                         cd.setRegion(lx, s + 1, lz, lx + 1, Math.min(treeTop, maxY - 1) + 1, lz + 1, Material.SPRUCE_LOG);
                     }
                     double d = Math.sqrt((double) dx * dx + (double) dz * dz);
-                    for (int y = tr.baseY() + 5; y <= treeTop + 3 && y < maxY; y++) {
-                        int k = treeTop + 3 - y;
-                        double rr = Math.min(tr.radius(), 1 + k * tr.radius() / (tr.height() * 0.75));
-                        if ((k & 1) == 1) rr -= 1.2;
+                    int leafStart = tr.baseY() + (int) (tr.height() * 0.3);
+                    int highest = -1;
+                    for (int y = leafStart; y <= treeTop + 4 && y < maxY - 2; y++) {
+                        int k = treeTop + 4 - y;
+                        double rr = Math.min(tr.radius(), 1.5 + k * tr.radius() / (tr.height() * 0.62));
+                        if (k % 6 >= 4) rr -= 2.0;
                         if (d <= rr && (cheb > tr.trunk() || y > treeTop)) {
                             cd.setBlock(lx, y, lz, Data.LEAVES);
+                            highest = y;
                         }
+                    }
+                    if (highest >= 0 && ((x * 31 + z * 17) & 3) != 0) {
+                        cd.setBlock(lx, highest + 1, lz, Data.SNOW);
                     }
                 }
 
