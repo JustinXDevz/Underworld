@@ -4,11 +4,10 @@ import org.bukkit.Material;
 import org.bukkit.block.Biome;
 import org.bukkit.util.noise.SimplexOctaveGenerator;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 /**
  * All terrain maths lives here so the chunk generator, the structure populator
@@ -20,18 +19,21 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class Terrain {
 
     public static final int SEA = 20;
-    public static final int CELL = 64;
+    /** One structure roll per 384x384 area (about 40% have one): roughly one every 600 blocks. */
+    public static final int STRUCT_CELL = 384;
+    public static final int STRUCT_CHANCE = 40;
+    /** Mega castles / kingdoms: at most one per 3600x3600 area. */
+    public static final int MEGA_CELL = 3600;
     /** Surface marker: no blocks at all in this column (a hole to the void). */
     public static final int VOID = Integer.MIN_VALUE;
     public static final int ABSENT = Integer.MIN_VALUE;
     public static final int HUB_RADIUS = 520;
-    public static final int WORLD_HALF = 2400;
     public static final int PLATEAU = 150;
     public static final int VALLEY_FLOOR = 60;
 
     public enum Zone { BASE, CRYSTAL, CRACK, SNOW, DARK }
 
-    public enum FeatureType { NONE, SPIRE, FORTRESS, TOWER, MAZE, RUIN, OUTPOST, HOUSE, MEGA_CASTLE, KINGDOM }
+    public enum FeatureType { NONE, SPIRE, FORTRESS, TOWER, MAZE, RUIN, OUTPOST, HOUSE, OBELISK, MEGA_CASTLE, KINGDOM }
 
     /** a = radius (spire) or half-size (structures); b = height (spire only). */
     public record Feature(FeatureType type, Zone zone, int x, int z, int baseY, int a, int b) { }
@@ -39,7 +41,13 @@ public final class Terrain {
     /** hollow = only a thin cap (powder snow) with nothing underneath. */
     public record Column(int surface, Material top, Material filler, int bridgeY, boolean hollow) { }
 
-    public record Crystal(int top, Material material) { }
+    /** A leaning crystal blade: base point, unit direction, length, base radius. */
+    public record Blade(double bx, double by, double bz, double dx, double dy, double dz, double len, double rad) { }
+
+    public record Cluster(int cx, int cz, int baseY, Blade[] blades) { }
+
+    /** hit[i] = a crystal block at y = base + i. */
+    public record CrystalColumn(int base, boolean[] hit) { }
 
     public record Tree(int x, int z, int baseY, int height, int radius, int trunk) { }
 
@@ -49,11 +57,9 @@ public final class Terrain {
         return CACHE.computeIfAbsent(seed, Terrain::new);
     }
 
-    private static final Material[] CRYSTAL_MATS = {
-            Material.CYAN_STAINED_GLASS, Material.LIGHT_BLUE_STAINED_GLASS, Material.PURPLE_STAINED_GLASS,
-            Material.MAGENTA_STAINED_GLASS, Material.GLASS
-    };
-    private static final int[] NO_CRYSTAL = new int[0];
+    private static final int[] NO_SPIRE = new int[0];
+    private static final Cluster NO_CLUSTER = new Cluster(0, 0, 0, new Blade[0]);
+    private static final int CLUSTER_CELL = 64;
     private static final Tree NO_TREE = new Tree(0, 0, 0, 0, 0, 0);
 
     private final long seed;
@@ -69,10 +75,10 @@ public final class Terrain {
     private final SimplexOctaveGenerator crackN;
     private final SimplexOctaveGenerator pitN;
 
-    private final Map<Long, Feature> fixed = new ConcurrentHashMap<>();
-    private final Map<Long, Feature> baseFeatures = new ConcurrentHashMap<>();
-    private final List<Feature> bigs = new ArrayList<>();
-    private final Map<Long, int[]> crystalCells = new ConcurrentHashMap<>();
+    private final Map<Long, Feature> structCache = new ConcurrentHashMap<>();
+    private final Map<Long, Feature> megaCache = new ConcurrentHashMap<>();
+    private final Map<Long, int[]> spireCache = new ConcurrentHashMap<>();
+    private final Map<Long, Cluster> clusterCells = new ConcurrentHashMap<>();
     private final Map<Long, Tree> treeCells = new ConcurrentHashMap<>();
 
     private Terrain(long seed) {
@@ -88,7 +94,6 @@ public final class Terrain {
         this.warpB = gen(seed + 19, 3, 1.0 / 300.0);
         this.crackN = gen(seed + 20, 3, 1.0 / 90.0);
         this.pitN = gen(seed + 21, 2, 1.0 / 26.0);
-        placeSites();
     }
 
     private static SimplexOctaveGenerator gen(long seed, int octaves, double scale) {
@@ -131,13 +136,13 @@ public final class Terrain {
         return wz > 0 ? Zone.CRACK : Zone.DARK;
     }
 
-    /** null = use the configured hub biome. */
+    /** null = use the configured hub biome. Teal fog, red fog, purple-grey fog, teal fog. */
     public Biome biome(int x, int z) {
         return switch (zone(x, z)) {
             case CRYSTAL -> Biome.SOUL_SAND_VALLEY;
-            case CRACK -> Biome.BASALT_DELTAS;
-            case SNOW -> Biome.SNOWY_TAIGA;
-            case DARK -> Biome.DEEP_DARK;
+            case CRACK -> Biome.CRIMSON_FOREST;
+            case SNOW -> Biome.END_HIGHLANDS;
+            case DARK -> Biome.SOUL_SAND_VALLEY;
             default -> null;
         };
     }
@@ -172,7 +177,7 @@ public final class Terrain {
 
     public Column rawColumn(int x, int z) {
         return switch (zone(x, z)) {
-            case CRYSTAL -> crystalColumn(x, z);
+            case CRYSTAL -> crystalZoneColumn(x, z);
             case CRACK -> crackColumn(x, z);
             case SNOW -> snowColumn(x, z);
             case DARK -> darkColumn(x, z);
@@ -180,9 +185,17 @@ public final class Terrain {
         };
     }
 
+    /** Flat plateaus with short risers, like the terraced hills of the real Underworld. */
+    private static double terrace(double h, double step) {
+        double q = h / step;
+        double f = Math.floor(q);
+        return step * (f + smooth((q - f - 0.35) / 0.3));
+    }
+
+    /** Hub: terraced soul sand / soul soil hills, lava lakes, canyons with old bridges. */
     private Column baseColumn(int x, int z) {
         double rim = 62 + n(base, x, z) * 20;
-        double h = rim + n(fine, x, z) * 3;
+        double h = terrace(rim + n(fine, x, z) * 3, 3);
 
         double v = smooth(1.0 - Math.abs(n(valleyNoise, x, z)) / 0.07);
         if (v > 0) {
@@ -203,7 +216,7 @@ public final class Terrain {
         int s = (int) Math.round(h);
 
         Material top;
-        Material filler = Material.BLACKSTONE;
+        Material filler = Material.SOUL_SOIL;
         if (s <= SEA + 1) {
             top = (((x * 73856093) ^ (z * 19349663)) & 3) == 0 ? Material.MAGMA_BLOCK : Material.BASALT;
             filler = Material.BASALT;
@@ -211,7 +224,7 @@ public final class Terrain {
             top = Material.SOUL_SOIL;
         } else {
             double p = n(patch, x, z);
-            top = p > 0.4 ? Material.NETHERRACK : (p < -0.4 ? Material.BASALT : Material.BLACKSTONE);
+            top = p > 0.15 ? Material.SOUL_SAND : (p < -0.55 ? Material.BLACKSTONE : Material.SOUL_SOIL);
         }
 
         int bridge = ABSENT;
@@ -225,144 +238,176 @@ public final class Terrain {
         return new Column(s, top, filler, bridge, false);
     }
 
-    /** Crystal Wasteland: soul sand dunes. */
-    private Column crystalColumn(int x, int z) {
-        int s = (int) Math.round(62 + n(base, x, z) * 7 + n(fine, x, z) * 2);
-        Material top = n(patch, x, z) > 0.35 ? Material.SOUL_SOIL : Material.SOUL_SAND;
+    /** Crystal Wasteland: dark soul soil terraces with soul sand streaks (crystals are added on top). */
+    private Column crystalZoneColumn(int x, int z) {
+        int s = (int) Math.round(terrace(62 + n(base, x, z) * 8 + n(fine, x, z) * 2, 4));
+        Material top = n(patch, x, z) > 0.45 ? Material.SOUL_SAND : Material.SOUL_SOIL;
         return new Column(s, top, Material.SOUL_SOIL, ABSENT, false);
     }
 
-    /** The Crack: the further from the hub, the wider the gaps. */
+    /** The Crack: big flat plates of land; the further out, the wider the gaps, until only shards float. */
     private Column crackColumn(int x, int z) {
         double d = Math.hypot(x, z);
-        double t = Math.max(0, Math.min(1, (d - HUB_RADIUS) / (WORLD_HALF - HUB_RADIUS)));
-        double width = 0.02 + 0.24 * Math.pow(t, 1.1);
+        double t = 1.0 - Math.exp(-Math.max(0, d - HUB_RADIUS) / 2500.0);
+        double width = 0.02 + 0.40 * Math.pow(t, 1.1);
         if (Math.abs(n(crackN, x, z)) < width) {
             return new Column(VOID, Material.AIR, Material.AIR, ABSENT, false);
         }
-        int s = (int) Math.round(62 + n(base, x, z) * 8 + n(fine, x, z) * 2);
+        int s = (int) Math.round(terrace(62 + n(base, x, z) * 10, 6));
         double p = n(patch, x, z);
-        Material top = p > 0.3 ? Material.NETHERRACK : (p < -0.45 ? Material.CRYING_OBSIDIAN : Material.BLACKSTONE);
-        return new Column(s, top, Material.BLACKSTONE, ABSENT, false);
+        Material top = p > 0.3 ? Material.NETHERRACK : (p < -0.6 ? Material.CRYING_OBSIDIAN : Material.SOUL_SOIL);
+        return new Column(s, top, Material.SOUL_SOIL, ABSENT, false);
     }
 
-    /** Snow Soul: snowy hills with powder snow pits that drop into the void. */
+    /** Snow Soul: smooth snowy terraces with powder snow pits that drop into the void. */
     private Column snowColumn(int x, int z) {
-        int s = (int) Math.round(64 + n(base, x, z) * 14 + n(fine, x, z) * 2);
+        int s = (int) Math.round(terrace(64 + n(base, x, z) * 14 + n(fine, x, z) * 1.5, 3));
         boolean pit = n(pitN, x, z) > 0.62;
         return new Column(s, Material.SNOW_BLOCK, Material.PACKED_ICE, ABSENT, pit);
     }
 
-    /** Valley of Dark: a maze of deep corridors under a sculk plateau. */
+    /** Valley of Dark: enormous brick canyon walls (150 high) around wide corridors (60 floor). */
     private Column darkColumn(int x, int z) {
-        int lx = Math.floorMod(x, 12);
-        int lz = Math.floorMod(z, 12);
-        int gx = Math.floorDiv(x, 12);
-        int gz = Math.floorDiv(z, 12);
+        int lx = Math.floorMod(x, 17);
+        int lz = Math.floorMod(z, 17);
+        int gx = Math.floorDiv(x, 17);
+        int gz = Math.floorDiv(z, 17);
         boolean open;
-        if (lx < 7 && lz < 7) open = true;
-        else if (lx >= 7 && lz < 7) open = edge(gx, gz, 0);
-        else if (lx < 7) open = edge(gx, gz, 1);
+        if (lx < 11 && lz < 11) open = true;
+        else if (lx >= 11 && lz < 11) open = edge(gx, gz, 0);
+        else if (lx < 11) open = edge(gx, gz, 1);
         else open = false;
         if (open) {
-            Material top = n(patch, x, z) > 0.45 ? Material.SCULK : Material.DEEPSLATE;
+            Material top = n(patch, x, z) > 0.3 ? Material.SOUL_SAND : Material.SOUL_SOIL;
             return new Column(VALLEY_FLOOR, top, Material.DEEPSLATE, ABSENT, false);
         }
-        return new Column(PLATEAU, Material.SCULK, Material.BLACKSTONE, ABSENT, false);
+        return new Column(PLATEAU, Material.SCULK, Material.DEEPSLATE_BRICKS, ABSENT, false);
     }
 
     private boolean edge(int gx, int gz, int dir) {
         return Long.remainderUnsigned(mix(gx, gz, 100 + dir), 100) < 62;
     }
 
-    // ------------------------------------------------------------------ fixed sites
+    // ------------------------------------------------------------------ structures (rare, spread out)
 
-    private static List<FeatureType> plan(Object... pairs) {
-        List<FeatureType> list = new ArrayList<>();
-        for (int i = 0; i < pairs.length; i += 2) {
-            FeatureType type = (FeatureType) pairs[i];
-            int count = (Integer) pairs[i + 1];
-            for (int k = 0; k < count; k++) list.add(type);
-        }
-        return list;
+    private static final FeatureType[] TYPES = {
+            FeatureType.FORTRESS, FeatureType.TOWER, FeatureType.MAZE, FeatureType.RUIN,
+            FeatureType.OUTPOST, FeatureType.HOUSE, FeatureType.OBELISK
+    };
+
+    private static int[] weights(Zone zone) {
+        // order: FORTRESS, TOWER, MAZE, RUIN, OUTPOST, HOUSE, OBELISK
+        return switch (zone) {
+            case CRYSTAL -> new int[] {0, 20, 0, 35, 15, 0, 30};
+            case CRACK -> new int[] {0, 15, 0, 35, 25, 0, 15};
+            case SNOW -> new int[] {0, 8, 0, 22, 15, 35, 10};
+            case DARK -> new int[] {0, 18, 0, 20, 15, 25, 12};
+            default -> new int[] {20, 20, 10, 30, 12, 0, 18};
+        };
     }
 
-    private void placeSites() {
-        Random r = new Random(seed * 6364136223846793005L + 1442695040888963407L);
-
-        bigs.add(new Feature(FeatureType.MEGA_CASTLE, Zone.CRYSTAL, 1900, 0, 66, 100, 0));
-        bigs.add(new Feature(FeatureType.KINGDOM, Zone.DARK, 0, -2000, VALLEY_FLOOR, 170, 0));
-
-        // Crystal Wasteland: 15 structures + 2 outposts (+ the mega castle)
-        place(r, Zone.CRYSTAL, plan(FeatureType.RUIN, 6, FeatureType.TOWER, 4, FeatureType.FORTRESS, 3,
-                FeatureType.MAZE, 2, FeatureType.OUTPOST, 2));
-        // The Crack: 10 structures
-        place(r, Zone.CRACK, plan(FeatureType.RUIN, 4, FeatureType.OUTPOST, 3, FeatureType.TOWER, 2,
-                FeatureType.FORTRESS, 1));
-        // Snow Soul: 20 structures
-        place(r, Zone.SNOW, plan(FeatureType.HOUSE, 10, FeatureType.RUIN, 5, FeatureType.TOWER, 2,
-                FeatureType.OUTPOST, 3));
-        // Valley of Dark: 30 structures (+ the kingdom)
-        place(r, Zone.DARK, plan(FeatureType.RUIN, 12, FeatureType.TOWER, 6, FeatureType.OUTPOST, 5,
-                FeatureType.FORTRESS, 4, FeatureType.HOUSE, 3));
+    private static FeatureType pickType(Zone zone, long h) {
+        int[] w = weights(zone);
+        int total = 0;
+        for (int v : w) total += v;
+        int r = (int) Long.remainderUnsigned(h, total);
+        for (int i = 0; i < w.length; i++) {
+            r -= w[i];
+            if (r < 0) return TYPES[i];
+        }
+        return FeatureType.RUIN;
     }
 
     private static int halfOf(FeatureType t) {
         return switch (t) {
-            case FORTRESS, MAZE -> 15;
-            case TOWER -> 4;
-            case RUIN -> 10;
-            case OUTPOST -> 8;
-            case HOUSE -> 6;
+            case FORTRESS, MAZE, RUIN -> 15;
+            case TOWER, OBELISK -> 6;
+            case OUTPOST -> 9;
+            case HOUSE -> 8;
             default -> 8;
         };
     }
 
-    private void place(Random r, Zone zone, List<FeatureType> types) {
-        for (FeatureType type : types) {
-            int half = halfOf(type);
-            for (int attempt = 0; attempt < 800; attempt++) {
-                int x = r.nextInt(2 * WORLD_HALF - 400) - (WORLD_HALF - 200);
-                int z = r.nextInt(2 * WORLD_HALF - 400) - (WORLD_HALF - 200);
-                if (zone(x, z) != zone) continue;
-                if (Math.hypot(x, z) < HUB_RADIUS + 100) continue;
-                if (tooClose(x, z, half)) continue;
-                int floor = VALLEY_FLOOR;
-                if (zone != Zone.DARK) {
-                    int s = rawColumn(x, z).surface();
-                    floor = s == VOID ? 62 : s;
-                }
-                fixed.put(key(Math.floorDiv(x, CELL), Math.floorDiv(z, CELL)),
-                        new Feature(type, zone, x, z, floor, half, 0));
-                break;
-            }
-        }
+    /** The structure (if any) of one 384x384 cell. Centre is always at least 50 blocks from the cell edge. */
+    public Feature structure(int cx, int cz) {
+        return structCache.computeIfAbsent(key(cx, cz), k -> computeStructure(cx, cz));
     }
 
-    private boolean tooClose(int x, int z, int half) {
-        for (Feature f : fixed.values()) {
-            if (Math.max(Math.abs(x - f.x()), Math.abs(z - f.z())) < 150 + half) return true;
+    private Feature computeStructure(int cx, int cz) {
+        Feature none = new Feature(FeatureType.NONE, Zone.BASE, cx * STRUCT_CELL, cz * STRUCT_CELL, 0, 0, 0);
+        if (Long.remainderUnsigned(mix(cx, cz, 1), 100) >= STRUCT_CHANCE) return none;
+
+        for (int attempt = 0; attempt < 4; attempt++) {
+            long ha = mix(cx, cz, 10 + attempt);
+            int px = cx * STRUCT_CELL + 50 + (int) Long.remainderUnsigned(ha, STRUCT_CELL - 100);
+            int pz = cz * STRUCT_CELL + 50 + (int) Long.remainderUnsigned(ha >>> 24, STRUCT_CELL - 100);
+            if (Math.hypot(px, pz) < 80) continue;
+
+            Zone zone = zone(px, pz);
+            FeatureType type = pickType(zone, mix(cx, cz, 20 + attempt));
+            int half = halfOf(type);
+
+            Feature mega = megaFeature(Math.floorDiv(px, MEGA_CELL), Math.floorDiv(pz, MEGA_CELL));
+            if (mega.type() != FeatureType.NONE && Math.abs(px - mega.x()) <= mega.a() + 80
+                    && Math.abs(pz - mega.z()) <= mega.a() + 80) continue;
+
+            int floor = VALLEY_FLOOR;
+            if (zone != Zone.DARK) {
+                Column c = rawColumn(px, pz);
+                if (c.surface() == VOID || c.hollow()) continue;
+                floor = c.surface();
+                if (zone == Zone.BASE) {
+                    // hub: needs dry, fairly flat ground
+                    int lo = floor;
+                    int hi = floor;
+                    boolean ok = floor > SEA + 3 && valley(px, pz) < 0.02;
+                    for (int sx = -1; sx <= 1 && ok; sx += 2) {
+                        for (int sz = -1; sz <= 1 && ok; sz += 2) {
+                            int sh = rawColumn(px + sx * half, pz + sz * half).surface();
+                            if (sh <= SEA + 3) ok = false;
+                            lo = Math.min(lo, sh);
+                            hi = Math.max(hi, sh);
+                        }
+                    }
+                    if (!ok || hi - lo > 16) continue;
+                }
+            }
+            return new Feature(type, zone, px, pz, floor, half, 0);
         }
-        for (Feature b : bigs) {
-            if (Math.max(Math.abs(x - b.x()), Math.abs(z - b.z())) < b.a() + 90 + half) return true;
+        return none;
+    }
+
+    /** The mega castle (crystal) or kingdom (dark) of one 3600x3600 cell, if any. */
+    private Feature megaFeature(int mx, int mz) {
+        return megaCache.computeIfAbsent(key(mx, mz), k -> computeMega(mx, mz));
+    }
+
+    private Feature computeMega(int mx, int mz) {
+        Feature none = new Feature(FeatureType.NONE, Zone.BASE, 0, 0, 0, 0, 0);
+        if (Long.remainderUnsigned(mix(mx, mz, 200), 100) >= 70) return none;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            long h = mix(mx, mz, 210 + attempt);
+            int x = mx * MEGA_CELL + 400 + (int) Long.remainderUnsigned(h, MEGA_CELL - 800);
+            int z = mz * MEGA_CELL + 400 + (int) Long.remainderUnsigned(h >>> 24, MEGA_CELL - 800);
+            Zone zone = zone(x, z);
+            if (zone != Zone.CRYSTAL && zone != Zone.DARK) continue;
+            int half = zone == Zone.CRYSTAL ? 100 : 170;
+            if (zone(x - half, z - half) != zone || zone(x + half, z - half) != zone
+                    || zone(x - half, z + half) != zone || zone(x + half, z + half) != zone) continue;
+            if (Math.hypot(x, z) < HUB_RADIUS + half + 150) continue;
+            return new Feature(zone == Zone.CRYSTAL ? FeatureType.MEGA_CASTLE : FeatureType.KINGDOM,
+                    zone, x, z, zone == Zone.CRYSTAL ? 66 : VALLEY_FLOOR, half, 0);
         }
-        return false;
+        return none;
     }
 
     private Feature siteCovering(int x, int z, int margin) {
-        for (Feature b : bigs) {
-            if (Math.abs(x - b.x()) <= b.a() + margin && Math.abs(z - b.z()) <= b.a() + margin) return b;
-        }
-        int cx = Math.floorDiv(x, CELL);
-        int cz = Math.floorDiv(z, CELL);
-        for (int i = -1; i <= 1; i++) {
-            for (int j = -1; j <= 1; j++) {
-                Feature f = fixed.get(key(cx + i, cz + j));
-                if (f != null && Math.abs(x - f.x()) <= f.a() + margin && Math.abs(z - f.z()) <= f.a() + margin) {
-                    return f;
-                }
-            }
-        }
+        Feature m = megaFeature(Math.floorDiv(x, MEGA_CELL), Math.floorDiv(z, MEGA_CELL));
+        if (m.type() != FeatureType.NONE && Math.abs(x - m.x()) <= m.a() + margin
+                && Math.abs(z - m.z()) <= m.a() + margin) return m;
+        Feature f = structure(Math.floorDiv(x, STRUCT_CELL), Math.floorDiv(z, STRUCT_CELL));
+        if (f.type() != FeatureType.NONE && Math.abs(x - f.x()) <= f.a() + margin
+                && Math.abs(z - f.z()) <= f.a() + margin) return f;
         return null;
     }
 
@@ -372,121 +417,141 @@ public final class Terrain {
 
     /** The mega castle / kingdom covering this column, or null. */
     public Feature big(int x, int z) {
-        for (Feature b : bigs) {
-            if (Math.abs(x - b.x()) <= b.a() && Math.abs(z - b.z()) <= b.a()) return b;
-        }
+        Feature m = megaFeature(Math.floorDiv(x, MEGA_CELL), Math.floorDiv(z, MEGA_CELL));
+        if (m.type() != FeatureType.NONE && Math.abs(x - m.x()) <= m.a() && Math.abs(z - m.z()) <= m.a()) return m;
         return null;
     }
 
-    // ------------------------------------------------------------------ hub features (random, one per cell)
+    // ------------------------------------------------------------------ hub spires (scenery)
 
-    public Feature feature(int cellX, int cellZ) {
-        long k = key(cellX, cellZ);
-        Feature f = fixed.get(k);
-        if (f != null) return f;
-        return baseFeatures.computeIfAbsent(k, kk -> compute(cellX, cellZ));
-    }
-
-    private Feature compute(int cx, int cz) {
-        long h = mix(cx, cz, 1);
-        int px = cx * CELL + 20 + (int) Long.remainderUnsigned(h, 25);
-        int pz = cz * CELL + 20 + (int) Long.remainderUnsigned(h >>> 16, 25);
-        int roll = (int) Long.remainderUnsigned(h >>> 32, 100);
-
-        Feature none = new Feature(FeatureType.NONE, Zone.BASE, px, pz, 0, 0, 0);
-        if (zone(px, pz) != Zone.BASE) return none;
-
-        FeatureType type;
-        if (roll < 34) type = FeatureType.SPIRE;
-        else if (roll < 44) type = FeatureType.FORTRESS;
-        else if (roll < 52) type = FeatureType.TOWER;
-        else if (roll < 60) type = FeatureType.MAZE;
-        else return none;
-
-        if (type == FeatureType.SPIRE) {
-            Column c = column(px, pz);
-            if (c.surface() <= SEA + 3 || valley(px, pz) > 0.02) return none;
-            int radius = 7 + (int) Long.remainderUnsigned(mix(cx, cz, 2), 8);
-            int height = 80 + (int) Long.remainderUnsigned(mix(cx, cz, 3), 90);
-            return new Feature(FeatureType.SPIRE, Zone.BASE, px, pz, c.surface(), radius, height);
-        }
-
-        int half = type == FeatureType.TOWER ? 4 : 15;
-        int lo = Integer.MAX_VALUE;
-        int hi = Integer.MIN_VALUE;
-        for (int dx = -half; dx <= half; dx += half) {
-            for (int dz = -half; dz <= half; dz += half) {
-                int x = px + dx;
-                int z = pz + dz;
-                int s = column(x, z).surface();
-                if (s <= SEA + 3 || valley(x, z) > 0.02) return none;
-                lo = Math.min(lo, s);
-                hi = Math.max(hi, s);
-            }
-        }
-        if (hi - lo > (type == FeatureType.TOWER ? 8 : 14)) return none;
-        return new Feature(type, Zone.BASE, px, pz, hi, half, 0);
-    }
-
-    public int spireTop(int x, int z, Feature f) {
-        if (f.type() != FeatureType.SPIRE) return ABSENT;
-        double dx = x - f.x();
-        double dz = z - f.z();
+    public int spireTop(int x, int z) {
+        int gx = Math.floorDiv(x, 72);
+        int gz = Math.floorDiv(z, 72);
+        int[] sp = spireCache.computeIfAbsent(key(gx, gz), k -> computeSpire(gx, gz));
+        if (sp.length == 0) return ABSENT;
+        double dx = x - sp[0];
+        double dz = z - sp[1];
         double d = Math.sqrt(dx * dx + dz * dz) + n(jag, x, z) * 1.5;
-        if (d >= f.a()) return ABSENT;
-        double t = 1.0 - Math.max(d, 0) / f.a();
-        return f.baseY() + (int) (f.b() * Math.pow(t, 1.6) + n(jag, z + 4096, x) * 5);
+        if (d >= sp[2]) return ABSENT;
+        double t = 1.0 - Math.max(d, 0) / sp[2];
+        return sp[4] + (int) (sp[3] * Math.pow(t, 1.6) + n(jag, z + 4096, x) * 5);
+    }
+
+    private int[] computeSpire(int gx, int gz) {
+        long h = mix(gx, gz, 60);
+        if (Long.remainderUnsigned(h, 100) >= 28) return NO_SPIRE;
+        int cx = gx * 72 + 20 + (int) Long.remainderUnsigned(h >>> 8, 33);
+        int cz = gz * 72 + 20 + (int) Long.remainderUnsigned(h >>> 20, 33);
+        if (zone(cx, cz) != Zone.BASE || nearSite(cx, cz, 20)) return NO_SPIRE;
+        Column c = rawColumn(cx, cz);
+        if (c.surface() <= SEA + 3 || valley(cx, cz) > 0.05) return NO_SPIRE;
+        int radius = 6 + (int) Long.remainderUnsigned(h >>> 32, 8);
+        int height = 70 + (int) Long.remainderUnsigned(h >>> 44, 100);
+        return new int[] {cx, cz, radius, height, c.surface()};
     }
 
     // ------------------------------------------------------------------ decoration
 
-    /** Glass crystal spikes in the Crystal Wasteland. */
-    public Crystal crystalAt(int x, int z) {
-        int gx = Math.floorDiv(x, 24);
-        int gz = Math.floorDiv(z, 24);
-        int[] c = crystalCells.computeIfAbsent(key(gx, gz), k -> computeCrystal(gx, gz));
-        if (c.length == 0) return null;
-        double dx = x - c[0];
-        double dz = z - c[1];
-        double d = Math.max(Math.abs(dx), Math.abs(dz)) * 0.6 + Math.sqrt(dx * dx + dz * dz) * 0.4;
-        if (d >= c[2]) return null;
-        int top = c[4] + (int) (c[3] * Math.pow(1.0 - d / c[2], 1.1));
-        return new Crystal(top, CRYSTAL_MATS[c[5]]);
+    // ------------------------------------------------------------------ crystals
+
+    public static boolean insideBlade(double px, double py, double pz, Blade b) {
+        double x = px - b.bx();
+        double y = py - b.by();
+        double z = pz - b.bz();
+        double t = x * b.dx() + y * b.dy() + z * b.dz();
+        if (t < 0 || t > b.len()) return false;
+        double r = b.rad() * (1.0 - t / b.len());
+        double perp = x * x + y * y + z * z - t * t;
+        return perp <= r * r;
     }
 
-    private int[] computeCrystal(int gx, int gz) {
+    /** Leaning lime-glass crystal blades grouped in clusters (dense in the Crystal Wasteland, rare in the hub). */
+    public CrystalColumn crystalColumn(int x, int z) {
+        int gx = Math.floorDiv(x, CLUSTER_CELL);
+        int gz = Math.floorDiv(z, CLUSTER_CELL);
+        Cluster c = clusterCells.computeIfAbsent(key(gx, gz), k -> computeCluster(gx, gz));
+        if (c.blades().length == 0) return null;
+        if (Math.abs(x - c.cx()) > 26 || Math.abs(z - c.cz()) > 26) return null;
+
+        boolean[] hit = null;
+        int base = c.baseY() - 3;
+        for (Blade b : c.blades()) {
+            double ex = b.bx() + b.dx() * b.len();
+            double ez = b.bz() + b.dz() * b.len();
+            if (distToSegmentSq(x + 0.5, z + 0.5, b.bx(), b.bz(), ex, ez) > (b.rad() + 1) * (b.rad() + 1)) continue;
+            int y1 = (int) Math.floor(b.by() - b.rad());
+            int y2 = (int) Math.ceil(b.by() + b.dy() * b.len() + b.rad());
+            for (int y = y1; y <= y2; y++) {
+                if (insideBlade(x + 0.5, y + 0.5, z + 0.5, b)) {
+                    if (hit == null) hit = new boolean[100];
+                    int i = y - base;
+                    if (i >= 0 && i < 100) hit[i] = true;
+                }
+            }
+        }
+        return hit == null ? null : new CrystalColumn(base, hit);
+    }
+
+    private static double distToSegmentSq(double px, double pz, double ax, double az, double bx, double bz) {
+        double vx = bx - ax;
+        double vz = bz - az;
+        double len2 = vx * vx + vz * vz;
+        double t = len2 == 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / len2));
+        double qx = ax + t * vx - px;
+        double qz = az + t * vz - pz;
+        return qx * qx + qz * qz;
+    }
+
+    private Cluster computeCluster(int gx, int gz) {
         long h = mix(gx, gz, 31);
-        if (Long.remainderUnsigned(h, 100) >= 70) return NO_CRYSTAL;
-        int cx = gx * 24 + 6 + (int) Long.remainderUnsigned(h >>> 8, 12);
-        int cz = gz * 24 + 6 + (int) Long.remainderUnsigned(h >>> 20, 12);
-        if (zone(cx, cz) != Zone.CRYSTAL || nearSite(cx, cz, 8)) return NO_CRYSTAL;
+        int cx = gx * CLUSTER_CELL + 24 + (int) Long.remainderUnsigned(h >>> 8, 17);
+        int cz = gz * CLUSTER_CELL + 24 + (int) Long.remainderUnsigned(h >>> 20, 17);
+        Zone zone = zone(cx, cz);
+        int chance = zone == Zone.CRYSTAL ? 80 : (zone == Zone.BASE ? 14 : 0);
+        if (Long.remainderUnsigned(h, 100) >= chance) return NO_CLUSTER;
+        if (nearSite(cx, cz, 26)) return NO_CLUSTER;
         Column col = rawColumn(cx, cz);
-        if (col.surface() == VOID) return NO_CRYSTAL;
-        int radius = 2 + (int) Long.remainderUnsigned(h >>> 32, 3);
-        int height = 8 + (int) Long.remainderUnsigned(h >>> 40, 28);
-        int mat = (int) Long.remainderUnsigned(h >>> 50, CRYSTAL_MATS.length);
-        return new int[] {cx, cz, radius, height, col.surface(), mat};
+        if (col.surface() == VOID || col.hollow() || col.surface() <= SEA + 3) return NO_CLUSTER;
+
+        Random r = new Random(h);
+        int count = 4 + r.nextInt(4);
+        Blade[] blades = new Blade[count];
+        for (int i = 0; i < count; i++) {
+            double a0 = r.nextDouble() * Math.PI * 2;
+            double rr = r.nextDouble() * 3.5;
+            double bx = cx + Math.cos(a0) * rr;
+            double bz = cz + Math.sin(a0) * rr;
+            double tilt = Math.toRadians(6 + r.nextDouble() * 26);
+            double az = Math.atan2(bz - cz, bx - cx) + (r.nextDouble() - 0.5) * 1.0;
+            double len = Math.min(14 + r.nextDouble() * 34, 19.0 / Math.sin(tilt));
+            blades[i] = new Blade(bx, col.surface() - 2, bz,
+                    Math.sin(tilt) * Math.cos(az), Math.cos(tilt), Math.sin(tilt) * Math.sin(az),
+                    len, 1.7 + r.nextDouble() * 1.7);
+        }
+        return new Cluster(cx, cz, col.surface(), blades);
     }
 
-    /** Big spruce trees in the Snow Soul. */
+    // ------------------------------------------------------------------ giant snow spruces
+
+    /** Huge spruces with 5x5 or 7x7 trunks. */
     public Tree treeAt(int x, int z) {
-        int gx = Math.floorDiv(x, 28);
-        int gz = Math.floorDiv(z, 28);
+        int gx = Math.floorDiv(x, 40);
+        int gz = Math.floorDiv(z, 40);
         Tree t = treeCells.computeIfAbsent(key(gx, gz), k -> computeTree(gx, gz));
         return t.height() == 0 ? null : t;
     }
 
     private Tree computeTree(int gx, int gz) {
         long h = mix(gx, gz, 41);
-        if (Long.remainderUnsigned(h, 100) >= 55) return NO_TREE;
-        int cx = gx * 28 + 9 + (int) Long.remainderUnsigned(h >>> 8, 11);
-        int cz = gz * 28 + 9 + (int) Long.remainderUnsigned(h >>> 20, 11);
-        if (zone(cx, cz) != Zone.SNOW || nearSite(cx, cz, 12)) return NO_TREE;
+        if (Long.remainderUnsigned(h, 100) >= 68) return NO_TREE;
+        int cx = gx * 40 + 15 + (int) Long.remainderUnsigned(h >>> 8, 10);
+        int cz = gz * 40 + 15 + (int) Long.remainderUnsigned(h >>> 20, 10);
+        if (zone(cx, cz) != Zone.SNOW || nearSite(cx, cz, 14)) return NO_TREE;
         Column c = rawColumn(cx, cz);
         if (c.surface() == VOID || c.hollow()) return NO_TREE;
-        int height = 24 + (int) Long.remainderUnsigned(h >>> 32, 19);
-        int radius = 5 + (int) Long.remainderUnsigned(h >>> 44, 4);
-        return new Tree(cx, cz, c.surface(), height, radius, height >= 32 ? 1 : 0);
+        int height = 44 + (int) Long.remainderUnsigned(h >>> 32, 30);
+        int radius = 9 + (int) Long.remainderUnsigned(h >>> 44, 5);
+        return new Tree(cx, cz, c.surface(), height, radius, height >= 62 ? 3 : 2);
     }
 
     /** Sculk plateau decoration: 1 = shrieker (summons wardens), 2 = sensor. */
@@ -503,8 +568,7 @@ public final class Terrain {
     public int topY(int x, int z) {
         int s = column(x, z).surface();
         if (s == VOID) return VOID;
-        Feature f = feature(Math.floorDiv(x, CELL), Math.floorDiv(z, CELL));
-        int sp = spireTop(x, z, f);
+        int sp = spireTop(x, z);
         return sp == ABSENT ? s : Math.max(s, sp);
     }
 
@@ -518,5 +582,48 @@ public final class Terrain {
         Column c = column(x, z);
         if (c.surface() == VOID || c.hollow() || c.surface() <= SEA + 1) return false;
         return c.surface() < PLATEAU - 20 || zone(x, z) != Zone.DARK;
+    }
+
+    // ------------------------------------------------------------------ locate
+
+    /** Nearest structure (or mega structure) matching the filter, scanning outward cell by cell. */
+    public Feature findStructure(int px, int pz, boolean mega, int maxRings, Predicate<Feature> match) {
+        int cell = mega ? MEGA_CELL : STRUCT_CELL;
+        int cx0 = Math.floorDiv(px, cell);
+        int cz0 = Math.floorDiv(pz, cell);
+        Feature best = null;
+        double bestD = Double.MAX_VALUE;
+        for (int r = 0; r <= maxRings; r++) {
+            if (best != null && (r - 1.0) * cell > bestD) break;
+            for (int i = -r; i <= r; i++) {
+                for (int j = -r; j <= r; j++) {
+                    if (Math.max(Math.abs(i), Math.abs(j)) != r) continue;
+                    Feature f = mega ? megaFeature(cx0 + i, cz0 + j) : structure(cx0 + i, cz0 + j);
+                    if (f.type() == FeatureType.NONE || !match.test(f)) continue;
+                    double d = Math.hypot(f.x() - px, f.z() - pz);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = f;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Nearest point (sampled every 96 blocks) that lies in the given zone, or null. */
+    public int[] findZone(int px, int pz, Zone target, int maxRadius) {
+        int step = 96;
+        for (int r = 0; r <= maxRadius / step; r++) {
+            for (int i = -r; i <= r; i++) {
+                for (int j = -r; j <= r; j++) {
+                    if (Math.max(Math.abs(i), Math.abs(j)) != r) continue;
+                    int x = px + i * step;
+                    int z = pz + j * step;
+                    if (zone(x, z) == target) return new int[] {x, z};
+                }
+            }
+        }
+        return null;
     }
 }
