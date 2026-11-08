@@ -50,12 +50,7 @@ public final class Knights {
         eq.setChestplate(armor(Material.NETHERITE_CHESTPLATE));
         eq.setLeggings(armor(Material.NETHERITE_LEGGINGS));
         eq.setBoots(armor(Material.NETHERITE_BOOTS));
-
-        ItemStack sword = new ItemStack(Material.NETHERITE_SWORD);
-        sword.addUnsafeEnchantment(Enchantment.SHARPNESS, 5);
-        sword.addUnsafeEnchantment(Enchantment.FIRE_ASPECT, 2);
-        sword.addUnsafeEnchantment(Enchantment.UNBREAKING, 3);
-        eq.setItemInMainHand(sword);
+        eq.setItemInMainHand(sword());
 
         float armorDrop = outpost ? 0.30f : 0.12f;
         float swordDrop = outpost ? 0.45f : 0.15f;
@@ -80,7 +75,8 @@ public final class Knights {
         ws.setCanPickupItems(false);
     }
 
-    private ItemStack armor(Material material) {
+    /** Netherite armour piece: Protection IV, Unbreaking III, emerald (green) trim. */
+    public static ItemStack armor(Material material) {
         ItemStack item = new ItemStack(material);
         item.addUnsafeEnchantment(Enchantment.PROTECTION, 4);
         item.addUnsafeEnchantment(Enchantment.UNBREAKING, 3);
@@ -89,5 +85,14 @@ public final class Knights {
             item.setItemMeta(meta);
         }
         return item;
+    }
+
+    /** Netherite sword: Sharpness V, Fire Aspect II, Unbreaking III. */
+    public static ItemStack sword() {
+        ItemStack sword = new ItemStack(Material.NETHERITE_SWORD);
+        sword.addUnsafeEnchantment(Enchantment.SHARPNESS, 5);
+        sword.addUnsafeEnchantment(Enchantment.FIRE_ASPECT, 2);
+        sword.addUnsafeEnchantment(Enchantment.UNBREAKING, 3);
+        return sword;
     }
 }
