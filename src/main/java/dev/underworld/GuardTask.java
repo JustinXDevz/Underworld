@@ -61,16 +61,16 @@ public final class GuardTask extends BukkitRunnable {
         Set<Long> seen = new HashSet<>();
 
         for (Player p : players) {
-            int pcx = Math.floorDiv(p.getLocation().getBlockX(), Terrain.CELL);
-            int pcz = Math.floorDiv(p.getLocation().getBlockZ(), Terrain.CELL);
-            for (int dx = -3; dx <= 3; dx++) {
-                for (int dz = -3; dz <= 3; dz++) {
+            int pcx = Math.floorDiv(p.getLocation().getBlockX(), Terrain.STRUCT_CELL);
+            int pcz = Math.floorDiv(p.getLocation().getBlockZ(), Terrain.STRUCT_CELL);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
                     int cx = pcx + dx;
                     int cz = pcz + dz;
                     long key = ((long) cx << 32) ^ (cz & 0xffffffffL);
                     if (!seen.add(key)) continue;
 
-                    Terrain.Feature f = t.feature(cx, cz);
+                    Terrain.Feature f = t.structure(cx, cz);
                     if (f.type() != Terrain.FeatureType.OUTPOST) continue;
                     if (!w.isChunkLoaded(Math.floorDiv(f.x(), 16), Math.floorDiv(f.z(), 16))) continue;
 
@@ -140,7 +140,6 @@ public final class GuardTask extends BukkitRunnable {
             double dist = 50 + rnd.nextDouble() * 30;
             int x = around.getBlockX() + (int) (Math.cos(ang) * dist);
             int z = around.getBlockZ() + (int) (Math.sin(ang) * dist);
-            if (Math.abs(x) > Terrain.WORLD_HALF - 20 || Math.abs(z) > Terrain.WORLD_HALF - 20) continue;
             if (!w.isChunkLoaded(x >> 4, z >> 4)) continue;
             if (!t.walkable(x, z)) continue;
             int y = w.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
@@ -174,8 +173,7 @@ public final class GuardTask extends BukkitRunnable {
             double dist = 24 + rnd.nextDouble() * 16;
             int x = here.getBlockX() + (int) (Math.cos(ang) * dist);
             int z = here.getBlockZ() + (int) (Math.sin(ang) * dist);
-            if (Math.abs(x) < Terrain.WORLD_HALF - 10 && Math.abs(z) < Terrain.WORLD_HALF - 10
-                    && w.isChunkLoaded(x >> 4, z >> 4) && t.walkable(x, z)) {
+            if (w.isChunkLoaded(x >> 4, z >> 4) && t.walkable(x, z)) {
                 int y = w.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES) + 1;
                 g.getPathfinder().moveTo(new Location(w, x + 0.5, y, z + 0.5), 1.0);
                 heading.put(g.getUniqueId(), ang);
