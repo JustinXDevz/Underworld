@@ -3,15 +3,17 @@ version: 1.0.0
 main: dev.underworld.UnderworldPlugin
 api-version: '1.21'
 description: A no-build dimension far below the Nether void (Unstable SMP style).
-softdepend: [Multiverse-Core, floodgate, Geyser-Spigot]
+softdepend: [Multiverse-Core, floodgate, Geyser-Spigot, Citizens]
 commands:
   underworld:
-    description: Underworld admin command
-    usage: /underworld <tp|info|reload>
-    permission: underworld.admin
+    description: Underworld command
+    usage: /underworld <locate|biome|info|tp|reload>
 permissions:
   underworld.admin:
-    description: Use /underworld
+    description: Teleport to the Underworld, reload, and use locate ... tp
+    default: op
+  underworld.locate:
+    description: Use /underworld locate and /underworld biome
     default: op
   underworld.bypass:
     description: Build and break inside the Underworld
