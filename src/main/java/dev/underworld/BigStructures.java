@@ -6,8 +6,8 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.generator.ChunkGenerator.ChunkData;
 
 /**
- * The 200x200 crystal mega castle and the dark kingdom. They are far bigger than a
- * populator can place, so they are generated column by column inside the chunk generator.
+ * The two giant structures, generated column by column inside the chunk generator:
+ * the round crystal citadel (200x200) and the gothic kingdom (340x340) with its cathedral castle.
  */
 public final class BigStructures {
 
@@ -16,10 +16,8 @@ public final class BigStructures {
         static final BlockData CHEST = Bukkit.createBlockData("minecraft:chest[facing=south]");
     }
 
-    private static final int[][] CHESTS = {
-            {-4, -4, 0}, {4, -4, 0}, {-4, 4, 0}, {4, 4, 0}, {-6, 0, 0}, {6, 0, 0},
-            {-5, -5, 1}, {5, -5, 1}, {-5, 5, 1}, {5, 5, 1}, {0, -6, 1}, {0, 6, 1},
-            {-4, -4, 2}, {4, -4, 2}, {0, -5, 2}, {0, 5, 2}
+    private static final int[][] NAVE_CHESTS = {
+            {-6, -30}, {6, -30}, {-6, -40}, {6, -40}, {0, -43}, {-28, -3}, {28, -3}, {-8, 20}, {8, 20}
     };
 
     private BigStructures() { }
@@ -29,7 +27,7 @@ public final class BigStructures {
         int dx = x - b.x();
         int dz = z - b.z();
         if (b.type() == Terrain.FeatureType.MEGA_CASTLE) {
-            castle(cd, lx, lz, dx, dz, b.baseY(), b.a(), p);
+            citadel(cd, lx, lz, dx, dz, b.baseY(), b.a(), p);
         } else {
             kingdom(cd, lx, lz, dx, dz, b.baseY(), b.a(), p);
         }
@@ -53,95 +51,16 @@ public final class BigStructures {
         return h & Long.MAX_VALUE;
     }
 
-    // ------------------------------------------------------------------ castle
-
-    /** dx/dz are relative to the castle centre, H is the half size. */
-    private static void castle(ChunkData cd, int lx, int lz, int dx, int dz, int f, int H, Palette p) {
-        int adx = Math.abs(dx);
-        int adz = Math.abs(dz);
-        int cheb = Math.max(adx, adz);
-        if (cheb > H) return;
-
-        int wallH = 14 + H / 8;
-        int K = H * 32 / 100;
-        int keepH = 30 + H / 7;
-        int rc = Math.max(8, H / 9);
-
-        // courtyard floor
-        boolean light = (((dx >> 2) + (dz >> 2)) & 1) == 0;
-        one(cd, lx, lz, f, light ? p.floor() : p.wall());
-
-        // glass crystals / statues in the courtyard
-        long hh = hash(dx, dz);
-        if (cheb < H - 7 && (adx > K + 3 || adz > K + 3) && hh % 91 == 0) {
-            span(cd, lx, lz, f + 1, f + 3 + (int) ((hh >>> 8) % 9), p.glass());
-        }
-
-        // keep
-        if (adx <= K && adz <= K) keep(cd, lx, lz, dx, dz, f, K, keepH, p);
-
-        // outer wall
-        if (cheb >= H - 5) {
-            span(cd, lx, lz, f + 1, f + wallH, p.pick(hash(dx * 3, dz * 7)));
-            if (cheb >= H - 1 && ((dx + dz) & 1) == 0) one(cd, lx, lz, f + wallH + 1, p.wall());
-            if (cheb == H && Math.floorMod(dx + dz, 9) == 0) {
-                span(cd, lx, lz, f + wallH - 6, f + wallH - 5, Material.AIR);
-            }
-            if (dz > 0 && adz >= H - 5 && adx <= 9) span(cd, lx, lz, f + 1, f + 16, Material.AIR);
-        }
-
-        // corner towers
-        int c = H - 12;
-        for (int sx = -1; sx <= 1; sx += 2) {
-            for (int sz = -1; sz <= 1; sz += 2) {
-                tower(cd, lx, lz, dx, dz, sx * c, sz * c, rc, wallH + 30, f, p, -sx, 0);
-            }
-        }
-        // wall towers
-        int m = H - 4;
-        int rm = rc - 2;
-        int th = wallH + 16;
-        tower(cd, lx, lz, dx, dz, 0, -m, rm, th, f, p, 0, 1);
-        tower(cd, lx, lz, dx, dz, m, 0, rm, th, f, p, -1, 0);
-        tower(cd, lx, lz, dx, dz, -m, 0, rm, th, f, p, 1, 0);
-        tower(cd, lx, lz, dx, dz, -20, m, rm, th, f, p, 0, -1);
-        tower(cd, lx, lz, dx, dz, 20, m, rm, th, f, p, 0, -1);
+    /** Solid cone: height shrinks linearly from the centre to the radius. */
+    private static void cone(ChunkData cd, int lx, int lz, double dist, double rad, int y0, double height, Material m) {
+        if (dist > rad) return;
+        int ch = (int) Math.round(height * (1.0 - dist / rad));
+        if (ch > 0) span(cd, lx, lz, y0, y0 + ch - 1, m);
     }
 
-    private static void keep(ChunkData cd, int lx, int lz, int dx, int dz, int f, int K, int keepH, Palette p) {
-        int adx = Math.abs(dx);
-        int adz = Math.abs(dz);
-        boolean wallCol = adx >= K - 2 || adz >= K - 2;
-        if (wallCol) {
-            span(cd, lx, lz, f + 1, f + keepH, p.pick(hash(dx * 5, dz * 11)));
-            boolean gate = dz > 0 && adz >= K - 2 && adx <= 4;
-            if (gate) {
-                span(cd, lx, lz, f + 1, f + 9, Material.AIR);
-            } else if (Math.floorMod(dx + dz, 8) == 0 && (adx == K || adz == K)) {
-                span(cd, lx, lz, f + 7, f + 9, p.glass());
-            }
-            if (((dx + dz) & 1) == 0 && (adx == K || adz == K)) one(cd, lx, lz, f + keepH + 1, p.wall());
-            return;
-        }
-        boolean hole = adx <= 2 && adz <= 2;
-        if (!hole) {
-            one(cd, lx, lz, f + 14, p.floor());
-            one(cd, lx, lz, f + 28, p.floor());
-            if (hash(dx, dz) % 6 != 0) one(cd, lx, lz, f + keepH, p.roof());
-        }
-        if (dx == 0 && dz == 0) span(cd, lx, lz, f + 1, f + keepH, p.wall());
-        if (dx == 1 && dz == 0) {
-            for (int y = f + 1; y < f + keepH; y++) cd.setBlock(lx, y, lz, Data.LADDER);
-        }
-        for (int[] ch : CHESTS) {
-            if (dx == K * ch[0] / 8 && dz == K * ch[1] / 8) {
-                cd.setBlock(lx, f + 1 + 14 * ch[2], lz, Data.CHEST);
-            }
-        }
-    }
-
+    /** Round tower with a hollow inside, floors every 12 blocks and a cone roof. */
     private static void tower(ChunkData cd, int lx, int lz, int dx, int dz, int tcx, int tcz, int r, int h,
-                              int f, Palette p, int doorX, int doorZ) {
+                              int f, Palette p, int doorX, int doorZ, Material coneMat, int coneH) {
         int ox = dx - tcx;
         int oz = dz - tcz;
         int d2 = ox * ox + oz * oz;
@@ -154,20 +73,72 @@ public final class BigStructures {
             if (door) {
                 span(cd, lx, lz, f + 1, f + 3, Material.AIR);
             } else if (Math.floorMod(ox + oz, 7) == 0) {
-                span(cd, lx, lz, f + 8, f + 9, p.glass());
+                span(cd, lx, lz, f + 8, f + 9, p.light());
             }
-            if (((dx + dz) & 1) == 0) one(cd, lx, lz, f + h + 1, p.wall());
+            if (coneH <= 0 && ((dx + dz) & 1) == 0) one(cd, lx, lz, f + h + 1, p.wall());
         } else {
             span(cd, lx, lz, f + 1, f + h, Material.AIR);
             for (int y = f + 12; y <= f + h; y += 12) one(cd, lx, lz, y, p.floor());
         }
-        // pointed glass roof
-        double d = Math.sqrt(d2);
-        int cone = (int) Math.round((r + 8) * (1.0 - d / r));
-        if (cone > 0) span(cd, lx, lz, f + h + 2, f + h + 1 + cone, p.glass());
+        if (coneH > 0) cone(cd, lx, lz, Math.sqrt(d2), r, f + h + 1, coneH, coneMat);
     }
 
-    // ------------------------------------------------------------------ kingdom
+    // ------------------------------------------------------------------ crystal citadel
+
+    /** Round citadel: ring wall, eight bastions, six inner towers and giant lime crystals in the middle. */
+    private static void citadel(ChunkData cd, int lx, int lz, int dx, int dz, int f, int H, Palette p) {
+        double d = Math.sqrt((double) dx * dx + (double) dz * dz);
+        if (d > H) return;
+        int wallH = 22;
+
+        boolean ring = ((int) (d / 5)) % 2 == 0;
+        one(cd, lx, lz, f, ring ? p.floor() : p.wall());
+
+        // amethyst ring around the crystal heart
+        if (d >= 24 && d <= 26) span(cd, lx, lz, f + 1, f + 2, p.rare());
+
+        // giant central crystals
+        int[][] spires = {{0, 0, 100, 12}, {15, 7, 72, 9}, {-14, 9, 66, 9}, {9, -15, 80, 9}, {-10, -13, 60, 8}, {20, -8, 54, 7}};
+        for (int[] sp : spires) {
+            cone(cd, lx, lz, Math.hypot(dx - sp[0], dz - sp[1]), sp[3], f + 1, sp[2], p.glass());
+        }
+
+        // chests around the heart
+        for (int i = 0; i < 6; i++) {
+            double a = i * Math.PI / 3;
+            if (dx == Math.round(Math.cos(a) * 31) && dz == Math.round(Math.sin(a) * 31)) {
+                cd.setBlock(lx, f + 1, lz, Data.CHEST);
+            }
+        }
+
+        // ring wall with a south gate
+        if (d >= H - 5) {
+            span(cd, lx, lz, f + 1, f + wallH, p.pick(hash(dx * 3, dz * 7)));
+            if (d >= H - 1.5 && ((dx + dz) & 1) == 0) one(cd, lx, lz, f + wallH + 1, p.wall());
+            if (dz > 0 && Math.abs(dx) <= 9) span(cd, lx, lz, f + 1, f + 14, Material.AIR);
+        }
+
+        // eight bastions on the wall
+        for (int i = 0; i < 8; i++) {
+            double a = i * Math.PI / 4 + Math.PI / 8;
+            int bx = (int) Math.round(Math.cos(a) * (H - 4));
+            int bz = (int) Math.round(Math.sin(a) * (H - 4));
+            int doorX = Math.abs(bx) >= Math.abs(bz) ? -(int) Math.signum((double) bx) : 0;
+            int doorZ = Math.abs(bx) >= Math.abs(bz) ? 0 : -(int) Math.signum((double) bz);
+            tower(cd, lx, lz, dx, dz, bx, bz, 9, wallH + 24, f, p, doorX, doorZ, p.glass(), 17);
+        }
+        // six slender inner towers
+        for (int i = 0; i < 6; i++) {
+            double a = i * Math.PI / 3 + Math.PI / 6;
+            int bx = (int) Math.round(Math.cos(a) * 58);
+            int bz = (int) Math.round(Math.sin(a) * 58);
+            int doorX = Math.abs(bx) >= Math.abs(bz) ? -(int) Math.signum((double) bx) : 0;
+            int doorZ = Math.abs(bx) >= Math.abs(bz) ? 0 : -(int) Math.signum((double) bz);
+            tower(cd, lx, lz, dx, dz, bx, bz, 6, 50 + (i * 7) % 16, f, p, doorX, doorZ, p.glass(), 16);
+        }
+    }
+
+    // ------------------------------------------------------------------ gothic kingdom
 
     private static void kingdom(ChunkData cd, int lx, int lz, int dx, int dz, int f, int H, Palette p) {
         int adx = Math.abs(dx);
@@ -175,32 +146,89 @@ public final class BigStructures {
         int cheb = Math.max(adx, adz);
         if (cheb > H) return;
 
-        // the huge castle at the far (north) end
+        // the cathedral castle at the far (north) end
         int cz2 = dz + 100;
-        if (Math.abs(cz2) <= 62 && adx <= 62) {
-            castle(cd, lx, lz, dx, cz2, f, 62, p);
+        if (adx <= 62 && Math.abs(cz2) <= 62) {
+            cathedral(cd, lx, lz, dx, cz2, f, p);
             return;
         }
 
         if (cheb >= H - 4) {
-            // city wall with four gates
-            span(cd, lx, lz, f + 1, f + 16, p.pick(hash(dx * 3, dz * 7)));
-            if (cheb >= H - 1 && ((dx + dz) & 1) == 0) one(cd, lx, lz, f + 17, p.wall());
+            span(cd, lx, lz, f + 1, f + 18, p.pick(hash(dx * 3, dz * 7)));
+            if (cheb >= H - 1 && ((dx + dz) & 1) == 0) one(cd, lx, lz, f + 19, p.wall());
             boolean gate = (adz >= H - 4 && adx <= 7) || (adx >= H - 4 && adz <= 7);
-            if (gate) span(cd, lx, lz, f + 1, f + 10, Material.AIR);
+            if (gate) span(cd, lx, lz, f + 1, f + 11, Material.AIR);
         } else {
             city(cd, lx, lz, dx, dz, f, p);
         }
-
-        // corner towers of the city wall
         int c = H - 8;
         for (int sx = -1; sx <= 1; sx += 2) {
             for (int sz = -1; sz <= 1; sz += 2) {
-                tower(cd, lx, lz, dx, dz, sx * c, sz * c, 8, 34, f, p, -sx, 0);
+                tower(cd, lx, lz, dx, dz, sx * c, sz * c, 8, 38, f, p, -sx, 0, p.roof(), 26);
             }
         }
     }
 
+    private static boolean inCath(int dx, int dz) {
+        boolean nave = Math.abs(dx) <= 13 && dz >= -46 && dz <= 34;
+        boolean transept = Math.abs(dx) <= 34 && dz >= -14 && dz <= 8;
+        return nave || transept;
+    }
+
+    private static void cathedral(ChunkData cd, int lx, int lz, int dx, int dz, int f, Palette p) {
+        int adx = Math.abs(dx);
+        one(cd, lx, lz, f, p.floor());
+
+        boolean nave = adx <= 13 && dz >= -46 && dz <= 34;
+        boolean in = inCath(dx, dz);
+        if (in) {
+            int roofRel = nave ? 30 + (13 - adx) : 24 + (11 - Math.abs(dz + 3));
+            int wallH = nave ? 30 : 24;
+            boolean edge = !inCath(dx + 2, dz) || !inCath(dx - 2, dz) || !inCath(dx, dz + 2) || !inCath(dx, dz - 2);
+            if (edge) {
+                int top = Math.max(wallH, roofRel - 1);
+                span(cd, lx, lz, f + 1, f + top, p.pick(hash(dx * 5, dz * 11)));
+                int k = Math.floorMod(dx + dz, 8);
+                for (int h = 6; h <= 22; h++) {
+                    double half = h <= 15 ? 1.6 : (h <= 19 ? 1.0 : 0.4);
+                    if (Math.abs(k - 3.5) <= half) one(cd, lx, lz, f + h, p.light());
+                }
+                if (dz >= 33 && adx <= 4) span(cd, lx, lz, f + 1, f + 13, Material.AIR);
+            }
+            one(cd, lx, lz, f + roofRel, p.roof());
+        }
+
+        // crossing tower with a tall slate spire
+        int ccz = dz + 3;
+        if (adx <= 8 && Math.abs(ccz) <= 8) {
+            if (Math.max(adx, Math.abs(ccz)) >= 7) {
+                span(cd, lx, lz, f + 1, f + 62, p.pick(hash(dx * 7, dz * 3)));
+                if (Math.floorMod(dx + dz, 5) == 0) span(cd, lx, lz, f + 40, f + 48, p.light());
+            } else {
+                span(cd, lx, lz, f + 31, f + 62, Material.AIR);
+            }
+            one(cd, lx, lz, f + 63, p.roof());
+            cone(cd, lx, lz, Math.hypot(dx, ccz), 9, f + 64, 46, p.roof());
+        }
+
+        // turrets with slate spires
+        int[][] turrets = {{13, -46}, {-13, -46}, {13, 34}, {-13, 34}, {34, -14}, {-34, -14},
+                {34, 8}, {-34, 8}, {13, -14}, {-13, -14}, {13, 8}, {-13, 8}};
+        for (int i = 0; i < turrets.length; i++) {
+            int tx = turrets[i][0];
+            int tz = turrets[i][1];
+            tower(cd, lx, lz, dx, dz, tx, tz, 3, 50 + (i * 7) % 20, f, p, 0, 0, p.roof(), 22);
+        }
+        // twin front towers
+        tower(cd, lx, lz, dx, dz, 9, 40, 6, 58, f, p, 0, -1, p.roof(), 30);
+        tower(cd, lx, lz, dx, dz, -9, 40, 6, 58, f, p, 0, -1, p.roof(), 30);
+
+        for (int[] c : NAVE_CHESTS) {
+            if (dx == c[0] && dz == c[1]) cd.setBlock(lx, f + 1, lz, Data.CHEST);
+        }
+    }
+
+    /** Streets and tall gothic houses: steep slate roofs, teal trim, warm orange windows. */
     private static void city(ChunkData cd, int lx, int lz, int dx, int dz, int f, Palette p) {
         int px = dx + 200;
         int pz = dz + 200;
@@ -209,34 +237,42 @@ public final class BigStructures {
         int hx = px % 18;
         int hz = pz % 18;
 
-        boolean road = hx < 4 || hz < 4 || Math.abs(dx) <= 3;
+        boolean road = hx < 3 || hz < 3 || Math.abs(dx) <= 3;
         if (road) {
             one(cd, lx, lz, f, p.floor());
             return;
         }
         long h = hash(cx, cz);
-        if (h % 100 >= 62) return;
+        if (h % 100 >= 60) return;
 
-        boolean shellX = hx == 5 || hx == 14;
-        boolean shellZ = hz == 6 || hz == 14;
-        if (hx >= 5 && hx <= 14 && hz >= 6 && hz <= 14) {
+        boolean inside = hx >= 4 && hx <= 13 && hz >= 4 && hz <= 14;
+        double u = Math.abs(hx - 8.5);
+        int roofRel = 9 + (int) (4.5 - u);
+
+        if (inside) {
             one(cd, lx, lz, f, p.floor());
+            boolean shellX = hx == 4 || hx == 13;
+            boolean shellZ = hz == 4 || hz == 14;
             if (shellX || shellZ) {
-                Material m = (shellX && shellZ) ? p.log() : p.plank();
-                span(cd, lx, lz, f + 1, f + 5, m);
-                if (hz == 14 && (hx == 9 || hx == 10)) {
-                    span(cd, lx, lz, f + 1, f + 2, Material.AIR);
-                } else if (((hx == 8 || hx == 11) && hz == 6) || (hz == 10 && shellX)) {
-                    one(cd, lx, lz, f + 3, p.glass());
+                boolean corner = shellX && shellZ;
+                if (corner) {
+                    span(cd, lx, lz, f + 1, f + 8, p.trim());
+                } else {
+                    span(cd, lx, lz, f + 1, f + 8, p.pick(hash(px * 3, pz * 5)));
+                    if (Math.floorMod(hx + hz, 3) == 1) {
+                        span(cd, lx, lz, f + 3, f + 4, p.light());
+                        span(cd, lx, lz, f + 6, f + 7, p.light());
+                    }
+                    if (hz == 14 && (hx == 8 || hx == 9)) span(cd, lx, lz, f + 1, f + 3, Material.AIR);
                 }
-            } else if (hx == 9 && hz == 8 && (h >>> 7) % 3 == 0) {
-                cd.setBlock(lx, f + 1, lz, Data.CHEST);
+                if (shellZ) span(cd, lx, lz, f + 9, f + roofRel - 1, p.wall());
+            } else {
+                if (hx == 11 && hz == 6 && (h >>> 5) % 3 == 0) span(cd, lx, lz, f + 1, f + roofRel + 4, Material.COBBLESTONE);
+                if (hx == 6 && hz == 7 && (h >>> 9) % 4 == 0) cd.setBlock(lx, f + 1, lz, Data.CHEST);
             }
         }
-        for (int k = 0; k < 5; k++) {
-            if (hx >= 4 + k && hx <= 15 - k && hz >= 5 + k && hz <= 15 - k) {
-                one(cd, lx, lz, f + 6 + k, p.roof());
-            }
+        if (hx >= 3 && hx <= 14 && hz >= 3 && hz <= 15) {
+            one(cd, lx, lz, f + roofRel, p.roof());
         }
     }
 }
