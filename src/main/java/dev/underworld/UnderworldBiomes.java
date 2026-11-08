@@ -10,8 +10,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Hub uses the configured fog biome; the four big zones each get their own biome
- * (teal soul sand valley, grey basalt deltas, snowy taiga, deep dark).
+ * Hub uses the configured fog biome (teal by default). The zones: Crystal Wasteland teal,
+ * The Crack red, Snow Soul purple-grey, Valley of Dark teal.
  */
 public final class UnderworldBiomes extends BiomeProvider {
 
@@ -39,9 +39,8 @@ public final class UnderworldBiomes extends BiomeProvider {
         Set<Biome> set = new LinkedHashSet<>();
         set.add(fog);
         set.add(Biome.SOUL_SAND_VALLEY);
-        set.add(Biome.BASALT_DELTAS);
-        set.add(Biome.SNOWY_TAIGA);
-        set.add(Biome.DEEP_DARK);
+        set.add(Biome.CRIMSON_FOREST);
+        set.add(Biome.END_HIGHLANDS);
         return new ArrayList<>(set);
     }
 }
