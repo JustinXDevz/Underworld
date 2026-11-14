@@ -487,6 +487,7 @@ public final class StructurePopulator extends BlockPopulator {
         s.b(0, height + 1, 0, s.pal.light());
         s.b(0, height + 2, 0, Material.LIGHT_BLUE_STAINED_GLASS);
         s.bd(4, 2, 0, CHEST);
+        s.b(-4, 2, 0, Material.LODESTONE); // waystone
     }
 
     private void plinth(Site s) {
@@ -611,6 +612,7 @@ public final class StructurePopulator extends BlockPopulator {
         s.blade(0, 4, 0, s.r.nextDouble() * 6.28, 7 + s.r.nextInt(8), 34 + s.r.nextInt(18), 3.2, s.pal.glass());
         s.blade(1, 4, -1, s.r.nextDouble() * 6.28, 20 + s.r.nextInt(10), 14 + s.r.nextInt(8), 1.6, s.pal.glass());
         s.bd(4, 2, 0, CHEST);
+        s.b(-4, 2, 0, Material.LODESTONE); // waystone
     }
 
     // ================================================================== THE CRACK
@@ -678,6 +680,7 @@ public final class StructurePopulator extends BlockPopulator {
         }
         s.b(0, height + 4, 0, s.pal.light());
         s.bd(4, 2, 0, CHEST);
+        s.b(-4, 2, 0, Material.LODESTONE); // waystone
     }
 
     // ================================================================== SNOW SOUL
