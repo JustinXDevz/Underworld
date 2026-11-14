@@ -9,6 +9,14 @@ final class CitizensHook {
         CitizensGuards guards = new CitizensGuards(plugin);
         plugin.getServer().getPluginManager().registerEvents(guards, plugin);
         guards.runTaskTimer(plugin, 100L, 10L);
-        return guards::shutdown;
+
+        NpcManager npcs = new NpcManager(plugin);
+        plugin.getServer().getPluginManager().registerEvents(npcs, plugin);
+        npcs.runTaskTimer(plugin, 120L, 40L);
+
+        return () -> {
+            guards.shutdown();
+            npcs.shutdown();
+        };
     }
 }
