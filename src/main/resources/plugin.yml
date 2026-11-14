@@ -7,7 +7,8 @@ softdepend: [Multiverse-Core, floodgate, Geyser-Spigot, Citizens]
 commands:
   underworld:
     description: Underworld command
-    usage: /underworld <locate|biome|info|tp|reload>
+    usage: /underworld <journal|balance|locate|biome|info|tp|reload>
+    aliases: [uw]
 permissions:
   underworld.admin:
     description: Teleport to the Underworld, reload, and use locate ... tp
