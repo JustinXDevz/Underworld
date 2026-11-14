@@ -5,6 +5,7 @@ import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Mob;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.CreatureSpawnEvent;
@@ -52,11 +53,17 @@ public final class MobListener implements Listener {
         }
     }
 
-    /** Knights and guards drop extra loot on top of their gear. */
+    /** Knights and guards drop extra loot on top of their gear; kills pay coins and count for quests. */
     @EventHandler
     public void onDeath(EntityDeathEvent e) {
+        Player killer = e.getEntity().getKiller();
+        if (e.getEntityType() == EntityType.WARDEN) {
+            if (killer != null && inUnderworld(e.getEntity().getWorld())) plugin.quests().onKill(killer, 3);
+            return;
+        }
         int kind = plugin.knights().kind(e.getEntity());
         if (kind == 0) return;
+        if (killer != null) plugin.quests().onKill(killer, kind);
         e.getDrops().addAll(LootListener.roll(kind == 1 ? 6 : 3));
         e.getDrops().add(new ItemStack(Material.NETHERITE_SCRAP, 1 + ThreadLocalRandom.current().nextInt(3)));
         e.setDroppedExp(kind == 1 ? 500 : 250);
