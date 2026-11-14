@@ -401,6 +401,11 @@ public final class Terrain {
         return none;
     }
 
+    /** The mega castle / kingdom of the 3600x3600 cell containing this point (type NONE if none). */
+    public Feature mega(int x, int z) {
+        return megaFeature(Math.floorDiv(x, MEGA_CELL), Math.floorDiv(z, MEGA_CELL));
+    }
+
     private Feature siteCovering(int x, int z, int margin) {
         Feature m = megaFeature(Math.floorDiv(x, MEGA_CELL), Math.floorDiv(z, MEGA_CELL));
         if (m.type() != FeatureType.NONE && Math.abs(x - m.x()) <= m.a() + margin
