@@ -342,6 +342,7 @@ public final class CitizensGuards extends BukkitRunnable implements Listener {
         Location loc = npc.getEntity().getLocation();
         World w = loc.getWorld();
         if (killer != null && w != null) {
+            plugin.quests().onKill(killer, st.kind);
             double armorChance = st.kind == 1 ? 0.30 : 0.12;
             double swordChance = st.kind == 1 ? 0.45 : 0.15;
             Material[] pieces = {Material.NETHERITE_HELMET, Material.NETHERITE_CHESTPLATE,
