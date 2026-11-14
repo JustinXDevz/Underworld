@@ -10,6 +10,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,7 +19,10 @@ import java.util.function.Predicate;
 /** /underworld tp | info | reload | locate <structure> [tp] | biome <zone> [tp] */
 public final class UnderworldCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUBS = List.of("locate", "biome", "info", "tp", "reload");
+    private static final List<String> SUBS = List.of("journal", "balance", "locate", "biome", "info", "tp", "reload",
+            "give", "givecoins");
+    private static final List<String> ITEMS = List.of("void_compass", "void_feather", "shardheart", "emberheart",
+            "lantern", "sigil", "crystal_shard", "map_fragment", "frost_locket", "grave_token", "royal_seal", "lore_page");
     private static final List<String> STRUCTURES = List.of("castle", "kingdom", "outpost", "tower", "house",
             "obelisk", "fortress", "maze", "ruin", "chapel", "shrine", "pavilion", "stonecircle");
     private static final List<String> BIOMES = List.of("hub", "crystal", "crack", "snow", "dark");
@@ -54,6 +58,21 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("Players only.");
                 }
             }
+            case "journal", "quests", "j" -> {
+                if (sender instanceof Player p) plugin.menus().openJournal(p);
+                else sender.sendMessage("Players only.");
+            }
+            case "balance", "coins" -> {
+                if (sender instanceof Player p) {
+                    PlayerStore.Data d = plugin.quests().data(p);
+                    sender.sendMessage(msg("Underworld coins: " + d.coins + " | Rank: "
+                            + QuestEngine.RANK_NAME[plugin.quests().rank(d)], NamedTextColor.GOLD));
+                } else {
+                    sender.sendMessage("Players only.");
+                }
+            }
+            case "give" -> giveItem(sender, args);
+            case "givecoins" -> giveCoins(sender, args);
             case "locate" -> locate(sender, args);
             case "biome" -> locateBiome(sender, args);
             default -> {
@@ -61,10 +80,62 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg("Underworld world: " + plugin.underworldName()
                         + (w == null ? " (not loaded)" : " (loaded)")
                         + " | Nether world: " + plugin.netherName(), NamedTextColor.GOLD));
-                sender.sendMessage(msg("Usage: /underworld <locate|biome|info|tp|reload>", NamedTextColor.GRAY));
+                sender.sendMessage(msg("Usage: /underworld <journal|balance|locate|biome|info|tp|reload>", NamedTextColor.GRAY));
             }
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------ admin helpers
+
+    private void giveItem(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("underworld.admin")) {
+            sender.sendMessage(msg("No permission.", NamedTextColor.RED));
+            return;
+        }
+        if (!(sender instanceof Player p) || args.length < 2) {
+            sender.sendMessage(msg("Usage: /underworld give <item> [amount]  (" + String.join(", ", ITEMS) + ")",
+                    NamedTextColor.GRAY));
+            return;
+        }
+        int amount = 1;
+        if (args.length >= 3) {
+            try {
+                amount = Math.max(1, Math.min(64, Integer.parseInt(args[2])));
+            } catch (NumberFormatException ignored) {
+                amount = 1;
+            }
+        }
+        String id = args[1].toLowerCase();
+        ItemStack item = id.equals("lore_page") ? plugin.relics().lorePage(0) : plugin.relics().create(id, amount);
+        if (item == null) {
+            sender.sendMessage(msg("Unknown item.", NamedTextColor.RED));
+            return;
+        }
+        plugin.relics().give(p, item);
+    }
+
+    private void giveCoins(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("underworld.admin")) {
+            sender.sendMessage(msg("No permission.", NamedTextColor.RED));
+            return;
+        }
+        if (args.length < 3) {
+            sender.sendMessage(msg("Usage: /underworld givecoins <player> <amount>", NamedTextColor.GRAY));
+            return;
+        }
+        Player target = Bukkit.getPlayerExact(args[1]);
+        if (target == null) {
+            sender.sendMessage(msg("Player not found.", NamedTextColor.RED));
+            return;
+        }
+        try {
+            long amount = Long.parseLong(args[2]);
+            plugin.quests().data(target).coins += amount;
+            sender.sendMessage(msg("Gave " + amount + " coins to " + target.getName() + ".", NamedTextColor.GREEN));
+        } catch (NumberFormatException ex) {
+            sender.sendMessage(msg("That is not a number.", NamedTextColor.RED));
+        }
     }
 
     // ------------------------------------------------------------------ locate structure
@@ -189,6 +260,8 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
             for (String s : SUBS) if (s.startsWith(args[0].toLowerCase())) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("locate")) {
             for (String s : STRUCTURES) if (s.startsWith(args[1].toLowerCase())) out.add(s);
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("give")) {
+            for (String s : ITEMS) if (s.startsWith(args[1].toLowerCase())) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("biome")) {
             for (String s : BIOMES) if (s.startsWith(args[1].toLowerCase())) out.add(s);
         } else if (args.length == 3 && sender.hasPermission("underworld.admin")) {
