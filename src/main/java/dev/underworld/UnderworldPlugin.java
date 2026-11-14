@@ -13,6 +13,10 @@ public final class UnderworldPlugin extends JavaPlugin {
 
     private TransitionListener transition;
     private Knights knights;
+    private PlayerStore store;
+    private QuestEngine quests;
+    private Relics relics;
+    private Menus menus;
     private Runnable guardShutdown;
 
     @Override
@@ -21,6 +25,13 @@ public final class UnderworldPlugin extends JavaPlugin {
         UnderworldBiomes.configure(getConfig().getString("fog-biome", "soul_sand_valley"));
 
         knights = new Knights(this);
+        store = new PlayerStore(getDataFolder());
+        relics = new Relics(this);
+        quests = new QuestEngine(this, store);
+        menus = new Menus(this);
+        getServer().getPluginManager().registerEvents(new GameplayListener(this), this);
+        new ExplorerTask(this).runTaskTimer(this, 100L, 40L);
+        getServer().getScheduler().runTaskTimer(this, store::saveAll, 6000L, 6000L);
         transition = new TransitionListener(this);
         getServer().getPluginManager().registerEvents(transition, this);
         getServer().getPluginManager().registerEvents(new ProtectionListener(this), this);
@@ -92,6 +103,7 @@ public final class UnderworldPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (guardShutdown != null) guardShutdown.run();
+        if (store != null) store.saveAll();
     }
 
     /** Falling snow around players in the Snow Soul. */
@@ -110,6 +122,18 @@ public final class UnderworldPlugin extends JavaPlugin {
     public void reload() {
         reloadConfig();
         transition.reload();
+    }
+
+    public QuestEngine quests() {
+        return quests;
+    }
+
+    public Relics relics() {
+        return relics;
+    }
+
+    public Menus menus() {
+        return menus;
     }
 
     public Knights knights() {
