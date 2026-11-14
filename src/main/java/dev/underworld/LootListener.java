@@ -5,6 +5,7 @@ import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
+import org.bukkit.entity.Player;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -87,6 +88,34 @@ public final class LootListener implements Listener {
         chest.getPersistentDataContainer().set(looted, PersistentDataType.BYTE, (byte) 1);
         chest.update();
         fill(e.getInventory());
+        bonus(e.getInventory(), loc);
+        if (e.getPlayer() instanceof Player opener) plugin.quests().onChest(opener);
+    }
+
+    /** Zone-specific quest items, royal seals in the big castles, and the odd lore page. */
+    private void bonus(Inventory inv, Location loc) {
+        Terrain t = Terrain.get(loc.getWorld().getSeed());
+        int x = loc.getBlockX();
+        int z = loc.getBlockZ();
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        String id = switch (t.zone(x, z)) {
+            case CRYSTAL -> "crystal_shard";
+            case CRACK -> "map_fragment";
+            case SNOW -> "frost_locket";
+            case DARK -> "grave_token";
+            default -> null;
+        };
+        if (id != null && r.nextInt(100) < 60) place(inv, plugin.relics().create(id, 1 + r.nextInt(2)));
+        if (t.big(x, z) != null && r.nextInt(100) < 80) place(inv, plugin.relics().create("royal_seal", 1));
+        if (r.nextInt(100) < 18) place(inv, plugin.relics().lorePage(r.nextInt(Relics.LORE.length)));
+    }
+
+    private void place(Inventory inv, ItemStack item) {
+        if (item == null) return;
+        List<Integer> empty = new ArrayList<>();
+        for (int i = 0; i < inv.getSize(); i++) if (inv.getItem(i) == null) empty.add(i);
+        if (empty.isEmpty()) return;
+        inv.setItem(empty.get(ThreadLocalRandom.current().nextInt(empty.size())), item);
     }
 
     /** Rolls loot from the table (also used for knight drops). */
