@@ -193,6 +193,13 @@ public final class QuestEngine {
             addCoins(killer, 25);
             addXp(killer, 3);
             bump(killer, Quest.Type.KILL_GUARD);
+        } else if (kind == 4) {
+            addCoins(killer, 10);
+            addXp(killer, 2);
+            bump(killer, Quest.Type.KILL_GUARD);
+        } else if (kind == 5) {
+            addCoins(killer, 800);
+            addXp(killer, 400);
         } else if (kind == 3) {
             addCoins(killer, 200);
             addXp(killer, 50);
