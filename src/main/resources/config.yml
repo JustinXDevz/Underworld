@@ -3,11 +3,12 @@ nether-world: world_nether
 underworld-world: underworld
 
 # Create the Underworld automatically on startup if it does not exist.
-# Turn this off if you create it yourself with Multiverse.
 auto-create-world: true
 
-# Fog / atmosphere.
-# fog-biome decides the fog colour (needs NEW chunks, see README):
+# The Underworld is infinite. Set a number (blocks, full width) to add a world border; 0 = none.
+border-size: 0
+
+# Fog / atmosphere of the HUB area (the four big biomes have their own):
 #   soul_sand_valley = teal-green   warped_forest = purple-teal
 #   nether_wastes    = red          crimson_forest = dark red   basalt_deltas = grey
 fog-biome: soul_sand_valley
@@ -15,8 +16,16 @@ fog-biome: soul_sand_valley
 world-time: 13000
 
 # Mobs
-allow-mobs: false     # false = no mobs spawn in the Underworld at all
-guard-mobs: false     # true = geared wither skeletons guard fortresses/towers/mazes
+allow-mobs: false          # false = no natural mobs (wardens, knights and guards still work)
+use-citizens: true         # guards are Citizens NPCs (needs the Citizens plugin; otherwise wither skeletons)
+guard-damage: 12           # damage per hit (12 = 6 hearts before armour)
+guard-skin: ""             # optional: player name whose skin the guards use
+outpost-knights: true      # one netherite knight in every outpost
+knight-respawn-minutes: 30
+patrol-guards: true        # netherite guards that wander around near players and hunt them
+patrol:
+  per-player: 2            # guards kept around each player
+  max-total: 24
 
 fall:
   # Falling below this Y in the Nether sends you down
@@ -32,9 +41,16 @@ return:
   trigger-y: 312
   fire-resistance-seconds: 15
 
-guards:
-  # Only used when guard-mobs is true
-  respawn-minutes: 10
-  fortress: 6
-  tower: 3
-  maze: 3
+# The Legion: a rare hostile army of 50-60 soldiers marching in formation behind a commander
+army:
+  natural: true               # armies appear on their own, rarely
+  size: 56                    # soldiers per army (10-80)
+  chance-per-check: 8         # percent, rolled every 10 minutes while players are in the Underworld
+  max-active: 1               # natural armies at the same time
+  max-total: 3                # includes armies you spawn with /uw army spawn
+  respawn-minutes: 120        # no new natural army this long after a commander is killed
+  materialize-distance: 90    # soldiers only exist as NPCs when a player is this close
+  march-speed: 3.0            # blocks per second while nobody is watching
+  soldier-damage: 8.0
+  commander-damage: 16.0
+  commander-glow: true        # the commander glows so you can spot him in the ranks
