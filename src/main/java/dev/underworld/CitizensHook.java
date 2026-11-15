@@ -14,9 +14,15 @@ final class CitizensHook {
         plugin.getServer().getPluginManager().registerEvents(npcs, plugin);
         npcs.runTaskTimer(plugin, 120L, 40L);
 
+        ArmyManager army = new ArmyManager(plugin);
+        plugin.getServer().getPluginManager().registerEvents(army, plugin);
+        army.runTaskTimer(plugin, 140L, 10L);
+        plugin.setArmyApi(army);
+
         return () -> {
             guards.shutdown();
             npcs.shutdown();
+            army.shutdown();
         };
     }
 }
