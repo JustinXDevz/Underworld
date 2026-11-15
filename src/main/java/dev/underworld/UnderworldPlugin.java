@@ -18,6 +18,7 @@ public final class UnderworldPlugin extends JavaPlugin {
     private Relics relics;
     private Menus menus;
     private Runnable guardShutdown;
+    private ArmyApi armyApi;
 
     @Override
     public void onEnable() {
@@ -122,6 +123,14 @@ public final class UnderworldPlugin extends JavaPlugin {
     public void reload() {
         reloadConfig();
         transition.reload();
+    }
+
+    public ArmyApi armyApi() {
+        return armyApi;
+    }
+
+    void setArmyApi(ArmyApi api) {
+        this.armyApi = api;
     }
 
     public QuestEngine quests() {
