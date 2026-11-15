@@ -20,11 +20,11 @@ import java.util.function.Predicate;
 public final class UnderworldCommand implements CommandExecutor, TabCompleter {
 
     private static final List<String> SUBS = List.of("journal", "balance", "locate", "biome", "info", "tp", "reload",
-            "give", "givecoins");
+            "give", "givecoins", "army");
     private static final List<String> ITEMS = List.of("void_compass", "void_feather", "shardheart", "emberheart",
             "lantern", "sigil", "crystal_shard", "map_fragment", "frost_locket", "grave_token", "royal_seal", "lore_page");
     private static final List<String> STRUCTURES = List.of("castle", "kingdom", "outpost", "tower", "house",
-            "obelisk", "fortress", "maze", "ruin", "chapel", "shrine", "pavilion", "stonecircle");
+            "obelisk", "fortress", "maze", "ruin", "chapel", "shrine", "pavilion", "stonecircle", "army");
     private static final List<String> BIOMES = List.of("hub", "crystal", "crack", "snow", "dark");
 
     private final UnderworldPlugin plugin;
@@ -71,6 +71,7 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage("Players only.");
                 }
             }
+            case "army" -> army(sender, args);
             case "give" -> giveItem(sender, args);
             case "givecoins" -> giveCoins(sender, args);
             case "locate" -> locate(sender, args);
@@ -84,6 +85,50 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
             }
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------ army
+
+    private void army(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("underworld.admin")) {
+            sender.sendMessage(msg("No permission.", NamedTextColor.RED));
+            return;
+        }
+        ArmyApi api = plugin.armyApi();
+        if (api == null) {
+            sender.sendMessage(msg("Armies need the Citizens plugin.", NamedTextColor.RED));
+            return;
+        }
+        String what = args.length >= 2 ? args[1].toLowerCase() : "";
+        switch (what) {
+            case "spawn" -> {
+                if (!(sender instanceof Player p)) {
+                    sender.sendMessage("Players only.");
+                    return;
+                }
+                World w = Bukkit.getWorld(plugin.underworldName());
+                if (w == null || !p.getWorld().equals(w)) {
+                    sender.sendMessage(msg("Go to the Underworld first.", NamedTextColor.RED));
+                    return;
+                }
+                int size = 0;
+                if (args.length >= 3) {
+                    try {
+                        size = Integer.parseInt(args[2]);
+                    } catch (NumberFormatException ignored) {
+                        size = 0;
+                    }
+                }
+                sender.sendMessage(msg(api.spawn(p, size), NamedTextColor.RED));
+            }
+            case "list" -> {
+                List<String> lines = api.list();
+                if (lines.isEmpty()) sender.sendMessage(msg("No armies.", NamedTextColor.GRAY));
+                for (String l : lines) sender.sendMessage(msg(l, NamedTextColor.GOLD));
+            }
+            case "clear" -> sender.sendMessage(msg("Removed " + api.clear() + " armies.", NamedTextColor.GREEN));
+            default -> sender.sendMessage(msg("Usage: /underworld army <spawn [size]|list|clear>", NamedTextColor.GRAY));
+        }
     }
 
     // ------------------------------------------------------------------ admin helpers
@@ -173,6 +218,13 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("The Underworld is not loaded.", NamedTextColor.RED));
             return;
         }
+        if (args.length >= 2 && args[1].equalsIgnoreCase("army")) {
+            ArmyApi api = plugin.armyApi();
+            String info = api == null ? null : api.nearest(p.getLocation());
+            sender.sendMessage(info == null ? msg("No Legion army is marching right now.", NamedTextColor.GRAY)
+                    : msg(info, NamedTextColor.RED));
+            return;
+        }
         Predicate<Terrain.Feature> match = args.length >= 2 ? matcher(args[1].toLowerCase()) : null;
         if (match == null) {
             sender.sendMessage(msg("Usage: /underworld locate <" + String.join("|", STRUCTURES) + "> [tp]",
@@ -260,6 +312,8 @@ public final class UnderworldCommand implements CommandExecutor, TabCompleter {
             for (String s : SUBS) if (s.startsWith(args[0].toLowerCase())) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("locate")) {
             for (String s : STRUCTURES) if (s.startsWith(args[1].toLowerCase())) out.add(s);
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("army")) {
+            for (String s : List.of("spawn", "list", "clear")) if (s.startsWith(args[1].toLowerCase())) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("give")) {
             for (String s : ITEMS) if (s.startsWith(args[1].toLowerCase())) out.add(s);
         } else if (args.length == 2 && args[0].equalsIgnoreCase("biome")) {
