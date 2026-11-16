@@ -36,6 +36,11 @@ public final class Knights {
         return b == null ? 0 : b;
     }
 
+    /** Marks any entity as ours (kind 4 = Legion soldier) so cleanup and loot rules know about it. */
+    public void tag(Entity e, int kind) {
+        e.getPersistentDataContainer().set(key, PersistentDataType.BYTE, (byte) kind);
+    }
+
     public WitherSkeleton spawn(Location loc, boolean outpost) {
         return loc.getWorld().spawn(loc, WitherSkeleton.class, ws -> equip(ws, outpost));
     }
