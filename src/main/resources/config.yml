@@ -19,7 +19,7 @@ world-time: 13000
 allow-mobs: false          # false = no natural mobs (wardens, knights and guards still work)
 use-citizens: true         # guards are Citizens NPCs (needs the Citizens plugin; otherwise wither skeletons)
 guard-damage: 12           # damage per hit (12 = 6 hearts before armour)
-guard-skin: ""             # optional: player name whose skin the guards use
+guard-skin: "null"             # optional: player name whose skin the guards use
 outpost-knights: true      # one netherite knight in every outpost
 knight-respawn-minutes: 30
 patrol-guards: true        # netherite guards that wander around near players and hunt them
