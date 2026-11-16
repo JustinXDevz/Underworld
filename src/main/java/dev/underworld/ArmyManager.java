@@ -1,10 +1,13 @@
 package dev.underworld;
 
+import com.destroystokyo.paper.entity.ai.MobGoals;
 import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.ai.Navigator;
+import net.citizensnpcs.api.npc.MemoryNPCDataStore;
 import net.citizensnpcs.api.npc.NPC;
 import net.citizensnpcs.api.npc.NPCRegistry;
 import net.citizensnpcs.api.trait.trait.Equipment;
+import net.citizensnpcs.trait.SkinTrait;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.HeightMap;
@@ -22,14 +25,19 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ExperienceOrb;
 import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Mob;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.WitherSkeleton;
+import org.bukkit.entity.Zombie;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ArmorMeta;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -49,16 +57,24 @@ import java.util.Random;
 import java.util.UUID;
 
 /**
- * The Legion: a rare, hostile army of 50-60 Citizens soldiers marching in formation behind a commander.
+ * The Legion: a rare hostile army (up to 600 soldiers) marching in tight regiments behind a commander.
  *
- * An army is "virtual" while nobody is near (it keeps marching as a position on the map) and only turns into
- * real NPCs when a player gets close, so it costs almost nothing when unobserved.
+ * Soldiers are Citizens NPCs (army.soldier-type: CITIZENS) or, if the server cannot cope, plain armoured mobs.
+ * What keeps 600 NPCs workable:
+ * - While nobody is near, the army is only a position on the map that keeps marching.
+ * - Regiments (10x10 soldiers, 1.15 blocks apart) only become real NPCs when a player is close to them,
+ *   never more than army.max-visible at once, and only a few per step so there is no lag spike.
+ * - The NPCs are not saved (anonymous registry), have no nameplate or collision, and walk in straight lines
+ *   to their slot instead of running a path search each.
  */
 public final class ArmyManager extends BukkitRunnable implements Listener, ArmyApi {
 
     private static final String KEY = "underworld-army";
-    private static final int COLS = 7;
-    private static final double SPACING = 2.4;
+    private static final int REG_SIDE = 10;
+    private static final int REG_SIZE = REG_SIDE * REG_SIDE;
+    private static final int REG_COLS = 3;
+    private static final double S = 1.15;
+    private static final double GAP = 3.0;
 
     private static final class Army {
         final int id;
@@ -69,37 +85,64 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         double tz;
         double lastX;
         double lastZ;
-        int alive;
+        int[] reg;
         boolean materialized;
         int commanderNpc = -1;
-        int toSpawn;
-        int nextSlot;
         long defeatedAt;
-        final List<Integer> npcIds = new ArrayList<>();
+        final List<List<Soldier>> units = new ArrayList<>();
 
-        Army(int id) {
+        Army(int id, int size) {
             this.id = id;
+            int regiments = Math.max(1, (size + REG_SIZE - 1) / REG_SIZE);
+            this.reg = new int[regiments];
+            int left = size;
+            for (int i = 0; i < regiments; i++) {
+                reg[i] = Math.min(REG_SIZE, left);
+                left -= reg[i];
+                units.add(new ArrayList<>());
+            }
+        }
+
+        int total() {
+            int n = 0;
+            for (int v : reg) n += v;
+            return n;
         }
     }
 
-    private static final class Member {
+    private static final class Soldier {
         final Army army;
+        final int regiment;
         final int slot;
-        final boolean commander;
+        int npcId = -1;
+        UUID uuid;
         long nextAttack;
         UUID target;
 
-        Member(Army army, int slot, boolean commander) {
+        Soldier(Army army, int regiment, int slot) {
             this.army = army;
+            this.regiment = regiment;
             this.slot = slot;
-            this.commander = commander;
+        }
+    }
+
+    private static final class Commander {
+        final Army army;
+        long nextAttack;
+        UUID target;
+
+        Commander(Army army) {
+            this.army = army;
         }
     }
 
     private final UnderworldPlugin plugin;
     private final Map<Integer, Army> armies = new LinkedHashMap<>();
-    private final Map<Integer, Member> members = new HashMap<>();
+    private final Map<Integer, Soldier> npcSoldiers = new HashMap<>();
+    private final Map<UUID, Soldier> mobSoldiers = new HashMap<>();
+    private final Map<Integer, Commander> commanders = new HashMap<>();
     private final Random rnd = new Random();
+    private NPCRegistry npcReg;
     private int nextId = 1;
     private long lastDefeat;
     private int tick;
@@ -112,6 +155,20 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
 
     private FileConfiguration cfg() {
         return plugin.getConfig();
+    }
+
+    /** Army NPCs live in their own registry: they are never saved and never clutter the normal NPC list. */
+    private NPCRegistry reg() {
+        if (npcReg == null) npcReg = CitizensAPI.createAnonymousNPCRegistry(new MemoryNPCDataStore());
+        return npcReg;
+    }
+
+    private boolean citizensSoldiers() {
+        return "CITIZENS".equalsIgnoreCase(cfg().getString("army.soldier-type", "CITIZENS"));
+    }
+
+    private int visible() {
+        return npcSoldiers.size() + mobSoldiers.size();
     }
 
     // ------------------------------------------------------------------ persistence
@@ -132,11 +189,14 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
             ConfigurationSection c = s.getConfigurationSection(k);
             if (c == null) continue;
             try {
-                Army a = new Army(Integer.parseInt(k));
+                List<Integer> regs = c.getIntegerList("reg");
+                int total = 0;
+                for (int v : regs) total += v;
+                Army a = new Army(Integer.parseInt(k), Math.max(10, total));
+                for (int i = 0; i < regs.size() && i < a.reg.length; i++) a.reg[i] = regs.get(i);
                 a.x = c.getDouble("x");
                 a.z = c.getDouble("z");
                 a.heading = c.getDouble("heading");
-                a.alive = c.getInt("alive", 56);
                 a.tx = a.x;
                 a.tz = a.z;
                 armies.put(a.id, a);
@@ -155,7 +215,9 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
             y.set(p + "x", a.x);
             y.set(p + "z", a.z);
             y.set(p + "heading", a.heading);
-            y.set(p + "alive", a.alive);
+            List<Integer> regs = new ArrayList<>();
+            for (int v : a.reg) regs.add(v);
+            y.set(p + "reg", regs);
         }
         try {
             y.save(file());
@@ -174,19 +236,18 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         }
         World w = Bukkit.getWorld(plugin.underworldName());
         if (w == null) return;
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
         List<Player> players = new ArrayList<>();
         for (Player p : w.getPlayers()) {
-            if (p.getGameMode() != GameMode.SPECTATOR && !reg.isNPC(p)) players.add(p);
+            if (p.getGameMode() != GameMode.SPECTATOR && !p.hasMetadata("NPC")) players.add(p);
         }
         Terrain t = Terrain.get(w.getSeed());
 
         tick++;
-        if (tick % 1200 == 0 && !players.isEmpty()) naturalSpawn(w, t, players);
-
+        if (tick % 1200 == 0 && !players.isEmpty()) naturalSpawn(t, players);
         for (Army a : new ArrayList<>(armies.values())) step(w, t, a, players);
     }
 
+    /** Older versions saved army NPCs in the normal registry. */
     private void cleanup() {
         List<NPC> old = new ArrayList<>();
         for (NPC n : CitizensAPI.getNPCRegistry()) {
@@ -196,23 +257,47 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
     }
 
     public void shutdown() {
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
         for (Army a : armies.values()) {
-            if (a.materialized) syncAlive(a);
-            for (Integer id : new ArrayList<>(a.npcIds)) {
-                NPC npc = reg.getById(id);
-                if (npc != null) npc.destroy();
-            }
-            a.npcIds.clear();
+            removeAllSoldiers(a);
+            destroyCommander(a);
             a.materialized = false;
         }
-        members.clear();
+        commanders.clear();
+        npcSoldiers.clear();
+        mobSoldiers.clear();
         save();
     }
 
-    // ------------------------------------------------------------------ spawning armies
+    private void destroyCommander(Army a) {
+        if (a.commanderNpc < 0) return;
+        NPC cmd = reg().getById(a.commanderNpc);
+        if (cmd != null) cmd.destroy();
+        commanders.remove(a.commanderNpc);
+        a.commanderNpc = -1;
+    }
 
-    private void naturalSpawn(World w, Terrain t, List<Player> players) {
+    private void removeSoldier(Soldier s) {
+        if (s.npcId >= 0) {
+            NPC n = reg().getById(s.npcId);
+            if (n != null) n.destroy();
+            npcSoldiers.remove(s.npcId);
+        } else if (s.uuid != null) {
+            Entity ent = Bukkit.getEntity(s.uuid);
+            if (ent != null) ent.remove();
+            mobSoldiers.remove(s.uuid);
+        }
+    }
+
+    private void removeAllSoldiers(Army a) {
+        for (List<Soldier> list : a.units) {
+            for (Soldier s : new ArrayList<>(list)) removeSoldier(s);
+            list.clear();
+        }
+    }
+
+    // ------------------------------------------------------------------ creating armies
+
+    private void naturalSpawn(Terrain t, List<Player> players) {
         FileConfiguration c = cfg();
         if (!c.getBoolean("army.natural", true)) return;
         if (armies.size() >= c.getInt("army.max-active", 1)) return;
@@ -227,19 +312,18 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
             int x = (int) (p.getLocation().getX() + Math.cos(ang) * d);
             int z = (int) (p.getLocation().getZ() + Math.sin(ang) * d);
             if (!t.walkable(x, z)) continue;
-            createArmy(x, z, rnd.nextDouble() * Math.PI * 2, c.getInt("army.size", 56));
+            createArmy(x, z, rnd.nextDouble() * Math.PI * 2, c.getInt("army.size", 560));
             return;
         }
     }
 
     private Army createArmy(double x, double z, double heading, int size) {
-        Army a = new Army(nextId++);
+        Army a = new Army(nextId++, Math.max(10, Math.min(600, size)));
         a.x = x;
         a.z = z;
         a.heading = heading;
         a.tx = x;
         a.tz = z;
-        a.alive = Math.max(10, Math.min(80, size));
         armies.put(a.id, a);
         save();
         return a;
@@ -250,20 +334,20 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         if (armies.size() >= cfg().getInt("army.max-total", 3)) {
             return "There are already " + armies.size() + " armies. Use /uw army clear first.";
         }
-        double yaw = Math.toRadians(at.getLocation().getYaw() + 90);
-        double heading = yaw;
-        double x = at.getLocation().getX() + Math.cos(heading) * 40;
-        double z = at.getLocation().getZ() + Math.sin(heading) * 40;
-        // march towards the player so they meet face to face
-        createArmy(x, z, heading + Math.PI, size > 0 ? size : cfg().getInt("army.size", 56));
-        return "A Legion army (" + (size > 0 ? size : cfg().getInt("army.size", 56)) + " soldiers) marches 40 blocks away.";
+        int n = size > 0 ? Math.min(600, size) : cfg().getInt("army.size", 560);
+        double heading = Math.toRadians(at.getLocation().getYaw() + 90);
+        double x = at.getLocation().getX() + Math.cos(heading) * 60;
+        double z = at.getLocation().getZ() + Math.sin(heading) * 60;
+        // it marches towards the player so they meet face to face
+        createArmy(x, z, heading + Math.PI, n);
+        return "A Legion army of " + n + " soldiers marches 60 blocks away.";
     }
 
     @Override
     public List<String> list() {
         List<String> out = new ArrayList<>();
         for (Army a : armies.values()) {
-            out.add("#" + a.id + " at " + Math.round(a.x) + ", " + Math.round(a.z) + " - " + a.alive
+            out.add("#" + a.id + " at " + Math.round(a.x) + ", " + Math.round(a.z) + " - " + a.total()
                     + " soldiers" + (a.materialized ? " (visible)" : " (marching)"));
         }
         return out;
@@ -290,7 +374,8 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
             }
         }
         if (best == null) return null;
-        return "Legion army: " + Math.round(best.x) + ", " + Math.round(best.z) + "  (about " + Math.round(bd) + " blocks away)";
+        return "Legion army (" + best.total() + " soldiers): " + Math.round(best.x) + ", " + Math.round(best.z)
+                + "  (about " + Math.round(bd) + " blocks away)";
     }
 
     // ------------------------------------------------------------------ per-army step
@@ -305,18 +390,14 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         for (Player p : players) {
             near = Math.min(near, Math.hypot(p.getLocation().getX() - a.x, p.getLocation().getZ() - a.z));
         }
-        double matDist = cfg().getDouble("army.materialize-distance", 90);
+        double matDist = cfg().getDouble("army.materialize-distance", 130);
         if (!a.materialized) {
             if (near <= matDist) materialize(w, t, a);
             else virtualMarch(t, a);
             return;
         }
-        NPC cmd = CitizensAPI.getNPCRegistry().getById(a.commanderNpc);
-        if (cmd == null) {
-            dematerialize(a);
-            return;
-        }
-        if (near > matDist + 60) {
+        NPC cmd = reg().getById(a.commanderNpc);
+        if (cmd == null || near > matDist + 70) {
             dematerialize(a);
             return;
         }
@@ -381,72 +462,45 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
             return;
         }
         Location loc = new Location(w, spot[0] + 0.5, spot[1], spot[2] + 0.5);
-        NPC cmd = spawnNpc(loc, true);
+        NPC cmd = spawnCommander(loc);
         if (cmd == null) return;
         a.commanderNpc = cmd.getId();
-        a.npcIds.add(cmd.getId());
-        members.put(cmd.getId(), new Member(a, -1, true));
+        commanders.put(cmd.getId(), new Commander(a));
         a.x = loc.getX();
         a.z = loc.getZ();
         a.lastX = a.x;
         a.lastZ = a.z;
         a.materialized = true;
-        a.toSpawn = a.alive;
-        a.nextSlot = 0;
         pickTarget(t, a, 35, 55);
 
         for (Player p : w.getPlayers()) {
-            if (Math.hypot(p.getLocation().getX() - a.x, p.getLocation().getZ() - a.z) < 200) {
+            if (Math.hypot(p.getLocation().getX() - a.x, p.getLocation().getZ() - a.z) < 250) {
                 p.playSound(p.getLocation(), Sound.EVENT_RAID_HORN, 4f, 1f);
                 p.sendMessage(Txt.c("\u00a74* A war horn sounds. The Legion marches!"));
             }
         }
     }
 
-    /** Counts the living soldiers so the army keeps its strength while unseen. */
-    private void syncAlive(Army a) {
-        int soldiers = 0;
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
-        for (Integer id : a.npcIds) {
-            Member m = members.get(id);
-            if (m != null && !m.commander && reg.getById(id) != null) soldiers++;
-        }
-        a.alive = soldiers + a.toSpawn;
-    }
-
     private void dematerialize(Army a) {
-        syncAlive(a);
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
-        NPC cmd = reg.getById(a.commanderNpc);
+        NPC cmd = reg().getById(a.commanderNpc);
         if (cmd != null && cmd.isSpawned()) {
             a.x = cmd.getEntity().getLocation().getX();
             a.z = cmd.getEntity().getLocation().getZ();
         }
-        for (Integer id : new ArrayList<>(a.npcIds)) {
-            NPC npc = reg.getById(id);
-            if (npc != null) npc.destroy();
-            members.remove(id);
-        }
-        a.npcIds.clear();
+        removeAllSoldiers(a);
+        destroyCommander(a);
         a.materialized = false;
-        a.commanderNpc = -1;
-        a.toSpawn = 0;
         save();
     }
 
     private void disband(Army a) {
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
-        for (Integer id : new ArrayList<>(a.npcIds)) {
-            NPC npc = reg.getById(id);
-            if (npc != null) npc.destroy();
-            members.remove(id);
-        }
-        a.npcIds.clear();
+        removeAllSoldiers(a);
+        destroyCommander(a);
         armies.remove(a.id);
         save();
     }
 
-    // ------------------------------------------------------------------ NPC creation
+    // ------------------------------------------------------------------ creating units
 
     private ItemStack soldierArmor(Material m) {
         ItemStack item = new ItemStack(m);
@@ -458,28 +512,21 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         return item;
     }
 
-    private NPC spawnNpc(Location loc, boolean commander) {
-        NPC npc = CitizensAPI.getNPCRegistry().createNPC(EntityType.PLAYER,
-                commander ? "\u00a74\u00a7lLegion Commander" : "\u00a77Legion Soldier");
-        npc.setProtected(false);
-        npc.data().setPersistent(KEY, commander ? 2 : 1);
+    private ItemStack soldierSword() {
+        ItemStack sword = new ItemStack(Material.NETHERITE_SWORD);
+        sword.addUnsafeEnchantment(Enchantment.SHARPNESS, 2);
+        return sword;
+    }
 
+    private NPC spawnCommander(Location loc) {
+        NPC npc = reg().createNPC(EntityType.PLAYER, "\u00a74\u00a7lLegion Commander");
+        npc.setProtected(false);
         Equipment eq = npc.getOrAddTrait(Equipment.class);
-        if (commander) {
-            eq.set(Equipment.EquipmentSlot.HELMET, Knights.armor(Material.NETHERITE_HELMET));
-            eq.set(Equipment.EquipmentSlot.CHESTPLATE, Knights.armor(Material.NETHERITE_CHESTPLATE));
-            eq.set(Equipment.EquipmentSlot.LEGGINGS, Knights.armor(Material.NETHERITE_LEGGINGS));
-            eq.set(Equipment.EquipmentSlot.BOOTS, Knights.armor(Material.NETHERITE_BOOTS));
-            eq.set(Equipment.EquipmentSlot.HAND, Knights.sword());
-        } else {
-            eq.set(Equipment.EquipmentSlot.HELMET, soldierArmor(Material.NETHERITE_HELMET));
-            eq.set(Equipment.EquipmentSlot.CHESTPLATE, soldierArmor(Material.NETHERITE_CHESTPLATE));
-            eq.set(Equipment.EquipmentSlot.LEGGINGS, soldierArmor(Material.NETHERITE_LEGGINGS));
-            eq.set(Equipment.EquipmentSlot.BOOTS, soldierArmor(Material.NETHERITE_BOOTS));
-            ItemStack sword = new ItemStack(Material.NETHERITE_SWORD);
-            sword.addUnsafeEnchantment(Enchantment.SHARPNESS, 2);
-            eq.set(Equipment.EquipmentSlot.HAND, sword);
-        }
+        eq.set(Equipment.EquipmentSlot.HELMET, Knights.armor(Material.NETHERITE_HELMET));
+        eq.set(Equipment.EquipmentSlot.CHESTPLATE, Knights.armor(Material.NETHERITE_CHESTPLATE));
+        eq.set(Equipment.EquipmentSlot.LEGGINGS, Knights.armor(Material.NETHERITE_LEGGINGS));
+        eq.set(Equipment.EquipmentSlot.BOOTS, Knights.armor(Material.NETHERITE_BOOTS));
+        eq.set(Equipment.EquipmentSlot.HAND, Knights.sword());
         if (!npc.spawn(loc)) {
             npc.destroy();
             return null;
@@ -487,32 +534,107 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         if (npc.getEntity() instanceof LivingEntity le) {
             AttributeInstance health = le.getAttribute(Attribute.MAX_HEALTH);
             if (health != null) {
-                health.setBaseValue(commander ? 250 : 40);
+                health.setBaseValue(300);
                 le.setHealth(health.getBaseValue());
             }
-            if (commander && cfg().getBoolean("army.commander-glow", true)) le.setGlowing(true);
+            if (cfg().getBoolean("army.commander-glow", true)) le.setGlowing(true);
         }
-        npc.getNavigator().getDefaultParameters().range(128f).speedModifier(commander ? 0.95f : 1.15f);
+        npc.getNavigator().getDefaultParameters().range(128f).speedModifier(0.85f);
         return npc;
     }
 
-    // ------------------------------------------------------------------ marching and fighting
+    /** A cheap Citizens soldier: no nameplate, no collision, no saving, straight-line walking. */
+    private NPC spawnSoldierNpc(Location loc) {
+        NPC npc = reg().createNPC(EntityType.PLAYER, "\u00a77Legion Soldier");
+        npc.setProtected(false);
+        npc.data().setPersistent("nameplate-visible", false);
+        npc.data().setPersistent("collidable", false);
+        Equipment eq = npc.getOrAddTrait(Equipment.class);
+        eq.set(Equipment.EquipmentSlot.HELMET, soldierArmor(Material.NETHERITE_HELMET));
+        eq.set(Equipment.EquipmentSlot.CHESTPLATE, soldierArmor(Material.NETHERITE_CHESTPLATE));
+        eq.set(Equipment.EquipmentSlot.LEGGINGS, soldierArmor(Material.NETHERITE_LEGGINGS));
+        eq.set(Equipment.EquipmentSlot.BOOTS, soldierArmor(Material.NETHERITE_BOOTS));
+        eq.set(Equipment.EquipmentSlot.HAND, soldierSword());
+        String skin = cfg().getString("army.soldier-skin", "");
+        if (skin != null && !skin.isEmpty()) npc.getOrAddTrait(SkinTrait.class).setSkinName(skin);
+        if (!npc.spawn(loc)) {
+            npc.destroy();
+            return null;
+        }
+        if (npc.getEntity() instanceof LivingEntity le) {
+            AttributeInstance health = le.getAttribute(Attribute.MAX_HEALTH);
+            if (health != null) {
+                health.setBaseValue(36);
+                le.setHealth(health.getBaseValue());
+            }
+        }
+        npc.getNavigator().getDefaultParameters().range(48f).speedModifier(1.2f).straightLineTargetingDistance(48f);
+        return npc;
+    }
 
-    private Location slotLocation(World w, Terrain t, Army a, int slot, Location c) {
+    private void equipMob(Mob mob) {
+        mob.setPersistent(false);
+        mob.setRemoveWhenFarAway(false);
+        mob.setCanPickupItems(false);
+        mob.setCollidable(false);
+        plugin.knights().tag(mob, 4);
+        MobGoals goals = Bukkit.getMobGoals();
+        goals.removeAllGoals(mob);
+
+        EntityEquipment eq = mob.getEquipment();
+        eq.setHelmet(soldierArmor(Material.NETHERITE_HELMET));
+        eq.setChestplate(soldierArmor(Material.NETHERITE_CHESTPLATE));
+        eq.setLeggings(soldierArmor(Material.NETHERITE_LEGGINGS));
+        eq.setBoots(soldierArmor(Material.NETHERITE_BOOTS));
+        eq.setItemInMainHand(soldierSword());
+        eq.setHelmetDropChance(0f);
+        eq.setChestplateDropChance(0f);
+        eq.setLeggingsDropChance(0f);
+        eq.setBootsDropChance(0f);
+        eq.setItemInMainHandDropChance(0f);
+
+        AttributeInstance health = mob.getAttribute(Attribute.MAX_HEALTH);
+        if (health != null) {
+            health.setBaseValue(36);
+            mob.setHealth(health.getBaseValue());
+        }
+    }
+
+    private Soldier spawnSoldier(World w, Army a, int r, int slot, Location loc) {
+        Soldier s = new Soldier(a, r, slot);
+        if (citizensSoldiers()) {
+            NPC npc = spawnSoldierNpc(loc);
+            if (npc == null) return null;
+            s.npcId = npc.getId();
+            npcSoldiers.put(s.npcId, s);
+        } else {
+            boolean zombie = "ZOMBIE".equalsIgnoreCase(cfg().getString("army.soldier-type", "CITIZENS"));
+            Class<? extends Mob> type = zombie ? Zombie.class : WitherSkeleton.class;
+            Mob mob = w.spawn(loc, type, this::equipMob);
+            s.uuid = mob.getUniqueId();
+            mobSoldiers.put(s.uuid, s);
+        }
+        return s;
+    }
+
+    // ------------------------------------------------------------------ formation
+
+    private Location slotLocation(World w, Terrain t, Army a, int r, int slot, Location c) {
         double fx = Math.cos(a.heading);
         double fz = Math.sin(a.heading);
-        int row = slot / COLS;
-        int col = slot % COLS;
-        double back = SPACING * (row + 2.5);
-        double side = SPACING * (col - (COLS - 1) / 2.0);
-        double x = c.getX() - fx * back - fz * side;
-        double z = c.getZ() - fz * back + fx * side;
+        int ri = r / REG_COLS;
+        int rj = r % REG_COLS;
+        double regLen = REG_SIDE * S;
+        double u = -(4.0 + ri * (regLen + GAP)) - (slot / REG_SIDE) * S;
+        double v = (rj - (REG_COLS - 1) / 2.0) * (regLen + GAP) + ((slot % REG_SIDE) - (REG_SIDE - 1) / 2.0) * S;
+        double x = c.getX() + fx * u - fz * v;
+        double z = c.getZ() + fz * u + fx * v;
         int bx = (int) Math.floor(x);
         int bz = (int) Math.floor(z);
         if (!w.isChunkLoaded(bx >> 4, bz >> 4) || !t.walkable(bx, bz)) {
-            // narrow terrain (canyons, cracks): fall back to a single file behind the commander
-            x = c.getX() - fx * back;
-            z = c.getZ() - fz * back;
+            // narrow ground (canyons, cracks): squeeze into the commander's line
+            x = c.getX() + fx * u;
+            z = c.getZ() + fz * u;
             bx = (int) Math.floor(x);
             bz = (int) Math.floor(z);
         }
@@ -523,12 +645,12 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         return new Location(w, x, y, z);
     }
 
+    // ------------------------------------------------------------------ marching and fighting
+
     private void drive(World w, Terrain t, Army a, NPC cmd, List<Player> players, long now) {
-        NPCRegistry reg = CitizensAPI.getNPCRegistry();
         if (!cmd.isSpawned()) return;
         Location cLoc = cmd.getEntity().getLocation();
 
-        // keep the formation oriented the way the commander is walking
         double mx = cLoc.getX() - a.lastX;
         double mz = cLoc.getZ() - a.lastZ;
         if (Math.hypot(mx, mz) > 1.0) {
@@ -539,84 +661,157 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
         a.x = cLoc.getX();
         a.z = cLoc.getZ();
 
-        // bring in the soldiers a few at a time
-        int spawnedNow = 0;
-        while (a.toSpawn > 0 && spawnedNow < 6) {
-            Location slot = slotLocation(w, t, a, a.nextSlot, cLoc);
-            NPC s = spawnNpc(slot, false);
-            a.nextSlot++;
-            a.toSpawn--;
-            if (s == null) continue;
-            a.npcIds.add(s.getId());
-            members.put(s.getId(), new Member(a, a.nextSlot - 1, false));
-            spawnedNow++;
+        driveCommander(w, t, a, cmd, cLoc, players, now);
+        manageRegiments(w, t, a, cLoc, players);
+        driveSoldiers(w, t, a, cLoc, players, now);
+    }
+
+    private void driveCommander(World w, Terrain t, Army a, NPC cmd, Location loc, List<Player> players, long now) {
+        Commander c = commanders.get(cmd.getId());
+        if (c == null) return;
+        Navigator nav = cmd.getNavigator();
+        Entity ent = cmd.getEntity();
+
+        Player target = null;
+        double best = 30.0 * 30.0;
+        for (Player p : players) {
+            double d = p.getLocation().distanceSquared(loc);
+            if (d < best) {
+                best = d;
+                target = p;
+            }
         }
-
-        double dmgSoldier = cfg().getDouble("army.soldier-damage", 8.0);
-        double dmgCommander = cfg().getDouble("army.commander-damage", 16.0);
-
-        for (Integer id : new ArrayList<>(a.npcIds)) {
-            Member m = members.get(id);
-            NPC npc = reg.getById(id);
-            if (m == null || npc == null) {
-                a.npcIds.remove(id);
-                continue;
+        if (target != null) {
+            if (!target.getUniqueId().equals(c.target) || !nav.isNavigating()) {
+                nav.setTarget(target, false);
+                c.target = target.getUniqueId();
             }
-            if (!npc.isSpawned()) continue;
-            Entity ent = npc.getEntity();
-            Location loc = ent.getLocation();
-            Navigator nav = npc.getNavigator();
+            if (Math.sqrt(best) <= 3.3 && now >= c.nextAttack) {
+                c.nextAttack = now + 900;
+                target.damage(cfg().getDouble("army.commander-damage", 16.0), ent);
+                target.setFireTicks(40);
+                if (ent instanceof Player pl) pl.swingMainHand();
+            }
+            return;
+        }
+        if (c.target != null) {
+            nav.cancelNavigation();
+            c.target = null;
+        }
+        if (Math.hypot(a.tx - loc.getX(), a.tz - loc.getZ()) < 8) pickTarget(t, a, 35, 55);
+        if (!nav.isNavigating()) {
+            int tx = (int) a.tx;
+            int tz = (int) a.tz;
+            if (w.isChunkLoaded(tx >> 4, tz >> 4)) {
+                int y = w.getHighestBlockYAt(tx, tz, HeightMap.MOTION_BLOCKING_NO_LEAVES) + 1;
+                nav.setTarget(new Location(w, tx + 0.5, y, tz + 0.5));
+            } else {
+                pickTarget(t, a, 25, 40);
+            }
+        }
+    }
 
-            Player target = null;
-            double best = (m.commander ? 30.0 : 26.0) * (m.commander ? 30.0 : 26.0);
+    /** Spawns the regiments players are close to (a few soldiers per step), removes the ones left behind. */
+    private void manageRegiments(World w, Terrain t, Army a, Location cLoc, List<Player> players) {
+        int cap = cfg().getInt("army.max-visible", 200);
+        double regDist = cfg().getDouble("army.regiment-distance", 70);
+        int budget = cfg().getInt("army.spawn-per-step", citizensSoldiers() ? 8 : 25);
+
+        for (int r = 0; r < a.reg.length && budget > 0; r++) {
+            List<Soldier> list = a.units.get(r);
+            Location center = slotLocation(w, t, a, r, 45, cLoc);
+            double near = Double.MAX_VALUE;
             for (Player p : players) {
-                double d = p.getLocation().distanceSquared(loc);
-                if (d < best) {
-                    best = d;
-                    target = p;
-                }
+                near = Math.min(near, Math.hypot(p.getLocation().getX() - center.getX(), p.getLocation().getZ() - center.getZ()));
             }
-            if (target != null) {
-                if (!target.getUniqueId().equals(m.target) || !nav.isNavigating()) {
-                    nav.setTarget(target, false);
-                    m.target = target.getUniqueId();
-                }
-                if (Math.sqrt(best) <= 3.3 && now >= m.nextAttack) {
-                    m.nextAttack = now + 900;
-                    target.damage(m.commander ? dmgCommander : dmgSoldier, ent);
-                    target.setFireTicks(40);
-                    if (ent instanceof Player pl) pl.swingMainHand();
-                }
+            if (near > regDist + 50) {
+                for (Soldier s : new ArrayList<>(list)) removeSoldier(s);
+                list.clear();
                 continue;
             }
-            if (m.target != null) {
-                nav.cancelNavigation();
-                m.target = null;
-            }
+            if (near > regDist && list.isEmpty()) continue;
 
-            if (m.commander) {
-                double dx = a.tx - loc.getX();
-                double dz = a.tz - loc.getZ();
-                if (Math.hypot(dx, dz) < 8) pickTarget(t, a, 35, 55);
-                if (!nav.isNavigating()) {
-                    int tx = (int) a.tx;
-                    int tz = (int) a.tz;
-                    if (w.isChunkLoaded(tx >> 4, tz >> 4)) {
-                        int y = w.getHighestBlockYAt(tx, tz, HeightMap.MOTION_BLOCKING_NO_LEAVES) + 1;
-                        nav.setTarget(new Location(w, tx + 0.5, y, tz + 0.5));
-                    } else {
-                        pickTarget(t, a, 25, 40);
+            boolean[] used = new boolean[REG_SIZE];
+            for (Soldier s : list) used[s.slot] = true;
+            int slot = 0;
+            while (list.size() < a.reg[r] && budget > 0 && visible() < cap) {
+                while (slot < REG_SIZE && used[slot]) slot++;
+                if (slot >= REG_SIZE) break;
+                Location at = slotLocation(w, t, a, r, slot, cLoc);
+                Soldier s = spawnSoldier(w, a, r, slot, at);
+                used[slot] = true;
+                budget--;
+                if (s != null) list.add(s);
+            }
+        }
+    }
+
+    private void driveSoldiers(World w, Terrain t, Army a, Location cLoc, List<Player> players, long now) {
+        double dmg = cfg().getDouble("army.soldier-damage", 6.0);
+        int i = 0;
+        for (int r = 0; r < a.reg.length; r++) {
+            for (Soldier s : new ArrayList<>(a.units.get(r))) {
+                i++;
+                Entity ent = null;
+                NPC npc = null;
+                boolean lost = false;
+                if (s.npcId >= 0) {
+                    npc = reg().getById(s.npcId);
+                    if (npc == null) lost = true;
+                    else if (npc.isSpawned()) ent = npc.getEntity();
+                } else {
+                    ent = s.uuid == null ? null : Bukkit.getEntity(s.uuid);
+                    if (ent == null || !ent.isValid()) lost = true;
+                }
+                if (lost) {
+                    a.units.get(r).remove(s);
+                    npcSoldiers.remove(s.npcId);
+                    if (s.uuid != null) mobSoldiers.remove(s.uuid);
+                    continue;
+                }
+                if (ent == null) continue;
+                Location loc = ent.getLocation();
+
+                Player target = null;
+                double best = 24.0 * 24.0;
+                for (Player p : players) {
+                    double d = p.getLocation().distanceSquared(loc);
+                    if (d < best) {
+                        best = d;
+                        target = p;
                     }
                 }
-            } else if ((tick + m.slot) % 3 == 0) {
-                Location slot = slotLocation(w, t, a, m.slot, cLoc);
+                if (target != null) {
+                    if (best <= 2.7 * 2.7) {
+                        if (now >= s.nextAttack) {
+                            s.nextAttack = now + 1000;
+                            target.damage(dmg, ent);
+                            if (ent instanceof LivingEntity le) le.swingMainHand();
+                        }
+                    } else if (npc != null) {
+                        Navigator nav = npc.getNavigator();
+                        if (!target.getUniqueId().equals(s.target) || !nav.isNavigating()) {
+                            nav.setTarget(target, false);
+                            s.target = target.getUniqueId();
+                        }
+                    } else if ((tick + i) % 2 == 0 && ent instanceof Mob mob) {
+                        mob.getPathfinder().moveTo(target.getLocation(), 1.3);
+                    }
+                    continue;
+                }
+                if (npc != null && s.target != null) {
+                    npc.getNavigator().cancelNavigation();
+                    s.target = null;
+                }
+                if ((tick + i) % 2 != 0) continue;
+                Location slot = slotLocation(w, t, a, r, s.slot, cLoc);
                 double d = Math.hypot(slot.getX() - loc.getX(), slot.getZ() - loc.getZ());
-                if (d > 28) {
-                    npc.teleport(slot, PlayerTeleportEvent.TeleportCause.PLUGIN);
-                } else if (d > 1.6) {
-                    double fx = Math.cos(a.heading) * 3;
-                    double fz = Math.sin(a.heading) * 3;
-                    nav.setTarget(slot.clone().add(fx, 0, fz));
+                if (d > 24) {
+                    if (npc != null) npc.teleport(slot, PlayerTeleportEvent.TeleportCause.PLUGIN);
+                    else ent.teleport(slot);
+                } else if (d > 1.0) {
+                    if (npc != null) npc.getNavigator().setTarget(slot);
+                    else if (ent instanceof Mob mob) mob.getPathfinder().moveTo(slot, 1.4);
                 }
             }
         }
@@ -624,13 +819,44 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
 
     // ------------------------------------------------------------------ death
 
+    private List<ItemStack> soldierDrops(Player killer) {
+        List<ItemStack> out = new ArrayList<>();
+        if (killer == null) return out;
+        plugin.quests().onKill(killer, 4);
+        if (rnd.nextDouble() < 0.06) {
+            Material[] pieces = {Material.NETHERITE_HELMET, Material.NETHERITE_CHESTPLATE,
+                    Material.NETHERITE_LEGGINGS, Material.NETHERITE_BOOTS};
+            out.add(soldierArmor(pieces[rnd.nextInt(pieces.length)]));
+        }
+        if (rnd.nextDouble() < 0.12) out.addAll(LootListener.roll(1));
+        return out;
+    }
+
+    private void forget(Soldier s) {
+        s.army.units.get(s.regiment).remove(s);
+        s.army.reg[s.regiment] = Math.max(0, s.army.reg[s.regiment] - 1);
+    }
+
+    /** Armoured-mob soldiers die the normal way. */
+    @EventHandler
+    public void onMobSoldierDeath(EntityDeathEvent e) {
+        Soldier s = mobSoldiers.remove(e.getEntity().getUniqueId());
+        if (s == null) return;
+        forget(s);
+        e.getDrops().clear();
+        e.setDroppedExp(8);
+        e.getDrops().addAll(soldierDrops(e.getEntity().getKiller()));
+    }
+
+    /** NPC soldiers and the commander: intercept the lethal hit and handle the death ourselves. */
     @EventHandler(priority = EventPriority.HIGH)
     public void onDamage(EntityDamageEvent e) {
         if (!(e.getEntity() instanceof LivingEntity le) || !e.getEntity().hasMetadata("NPC")) return;
-        NPC npc = CitizensAPI.getNPCRegistry().getNPC(e.getEntity());
-        if (npc == null) return;
-        Member m = members.get(npc.getId());
-        if (m == null) return;
+        NPC npc = reg().getNPC(e.getEntity());
+        if (npc == null || reg().getById(npc.getId()) != npc) return;
+        Soldier s = npcSoldiers.get(npc.getId());
+        Commander c = commanders.get(npc.getId());
+        if (s == null && c == null) return;
         if (le.getHealth() - e.getFinalDamage() > 0) return;
 
         e.setCancelled(true);
@@ -643,35 +869,26 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
                 killer = sp;
             }
         }
-        if (m.commander) commanderDown(npc, m, killer);
-        else soldierDown(npc, m, killer);
+        if (c != null) commanderDown(npc, c, killer);
+        else soldierDown(npc, s, killer);
     }
 
-    private void soldierDown(NPC npc, Member m, Player killer) {
+    private void soldierDown(NPC npc, Soldier s, Player killer) {
         Location loc = npc.getEntity().getLocation();
         World w = loc.getWorld();
-        if (killer != null && w != null) {
-            plugin.quests().onKill(killer, 4);
-            if (rnd.nextDouble() < 0.10) {
-                Material[] pieces = {Material.NETHERITE_HELMET, Material.NETHERITE_CHESTPLATE,
-                        Material.NETHERITE_LEGGINGS, Material.NETHERITE_BOOTS};
-                w.dropItemNaturally(loc, soldierArmor(pieces[rnd.nextInt(pieces.length)]));
-            }
-            if (rnd.nextDouble() < 0.25) {
-                for (ItemStack item : LootListener.roll(1)) w.dropItemNaturally(loc, item);
-            }
-            w.spawn(loc, ExperienceOrb.class, orb -> orb.setExperience(40));
+        if (w != null) {
+            for (ItemStack item : soldierDrops(killer)) w.dropItemNaturally(loc, item);
+            if (killer != null) w.spawn(loc, ExperienceOrb.class, orb -> orb.setExperience(8));
         }
-        m.army.npcIds.remove((Integer) npc.getId());
-        members.remove(npc.getId());
-        m.army.alive = Math.max(0, m.army.alive - 1);
+        npcSoldiers.remove(npc.getId());
+        forget(s);
         npc.destroy();
     }
 
-    private void commanderDown(NPC npc, Member m, Player killer) {
+    private void commanderDown(NPC npc, Commander c, Player killer) {
         Location loc = npc.getEntity().getLocation();
         World w = loc.getWorld();
-        Army a = m.army;
+        Army a = c.army;
         if (killer != null && w != null) {
             plugin.quests().onKill(killer, 5);
             dropCommanderLoot(w, loc);
@@ -682,16 +899,15 @@ public final class ArmyManager extends BukkitRunnable implements Listener, ArmyA
                 }
             }
         }
-        a.npcIds.remove((Integer) npc.getId());
-        members.remove(npc.getId());
+        commanders.remove(npc.getId());
         npc.destroy();
+        a.commanderNpc = -1;
         a.defeatedAt = System.currentTimeMillis();
         lastDefeat = a.defeatedAt;
         save();
     }
 
     private void dropCommanderLoot(World w, Location loc) {
-        // the prize: elytra
         ItemStack wings = new ItemStack(Material.ELYTRA);
         ItemMeta meta = wings.getItemMeta();
         meta.displayName(Txt.c("\u00a75Wings of the Legion Commander"));
